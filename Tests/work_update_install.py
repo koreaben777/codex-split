@@ -96,6 +96,8 @@ class InstallTests(unittest.TestCase):
     def test_pending_daily_or_running_launcher_blocks(self):
         self.daily({'schemaVersion': 3, 'attempts': [{'phase': 'active'}]})
         with self.assertRaises(RuntimeError): self.deploy()
+        self.daily({'schemaVersion': 2, 'attempts': [{'phase': 'exitUnobserved'}]})
+        m.visit_idle(self.control)  # closed on kernel proof: not a running visit
         self.daily({'schemaVersion': 3, 'attempts': []})
         def busy(): raise RuntimeError('런처 실행 중')
         with self.assertRaises(RuntimeError): self.deploy(check_idle=busy)

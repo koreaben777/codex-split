@@ -13,7 +13,7 @@ private final class WorkDailyContext {
     let bootSession: String
     // The segment belongs to another launcher or official target. Only beginUpdate may continue.
     let updateRequired: Bool
-    init() throws {
+    private static func launcher() throws -> (path: String, hash: String) {
         guard Thread.isMainThread, CommandLine.arguments.count == 1,
               Bundle.main.bundleIdentifier == "local.codexsplit.work", WorkUpdateGuide.ownBundleIntact,
               let executable = Bundle.main.executableURL else { throw Failure.identityMismatch }
@@ -25,7 +25,26 @@ private final class WorkDailyContext {
               executable.path == bundle + "/Contents/MacOS/launcher",
               executable.resolvingSymlinksInPath().path == executable.path,
               let hash = fileDigest(executable.path) else { throw Failure.identityMismatch }
-        toolPath = executable.path; toolFingerprint = hash
+        return (executable.path, hash)
+    }
+    private static func currentBoot() throws -> String {
+        var bytes = [CChar](repeating: 0, count: 128)
+        guard cs_boot_session(&bytes, 128) == 0 else { throw Failure.processUnknown }
+        let boot = String(cString: bytes)
+        guard UUID(uuidString: boot) != nil else { throw Failure.processUnknown }
+        return boot
+    }
+    // Records only, no official app check: a visit that provably ended can be closed even while the
+    // official app awaits an update (the installer never replaces a launcher over an unresolved visit).
+    static func records() throws -> (coordinator: WorkDailyCoordinator, bootSession: String) {
+        _ = try launcher()
+        let plan = AppInitialTrialPlan.workSetup(requestedAt: Date())
+        try AppTrialRootLease.resumeWork(plan).validate(requireEmpty: false)
+        return (.production(store: try PrivateStore(root: plan.root + "/control")), try currentBoot())
+    }
+    init() throws {
+        let (path, hash) = try Self.launcher()
+        toolPath = path; toolFingerprint = hash
         plan = .workSetup(requestedAt: Date())
         try ProductionInitialTrial.checkBinaries(plan)
         lease = try AppTrialRootLease.resumeWork(plan)
@@ -41,11 +60,7 @@ private final class WorkDailyContext {
             updateRequired = false
             try WorkDailyCoordinator.prerequisites(store.read(), plan: plan, daily: daily)
         }
-        var bytes = [CChar](repeating: 0, count: 128)
-        guard cs_boot_session(&bytes, 128) == 0 else { throw Failure.processUnknown }
-        let boot = String(cString: bytes)
-        guard UUID(uuidString: boot) != nil else { throw Failure.processUnknown }
-        bootSession = boot
+        bootSession = try Self.currentBoot()
         try verify()
     }
     func verify() throws {
@@ -143,6 +158,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
                 }
                 return
             }
+            guard try closeUnobservedVisit() else { NSApplication.shared.terminate(nil); return }
             let context = try WorkDailyContext()
             self.context = context
             var state = try context.coordinator.read()
@@ -232,6 +248,28 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             if descriptor >= 0 && generation != nil && attemptID != nil { beginPolling() }
             else { closeObservation(); NSApplication.shared.terminate(nil) }
         }
+    }
+    // False: a visit is still unresolved (message shown) or the user declined to close it.
+    private func closeUnobservedVisit() throws -> Bool {
+        let (coordinator, bootSession) = try WorkDailyContext.records()
+        let state = try coordinator.read()
+        guard state.pending else { return true }
+        // Another launcher instance may still be about to record the exit itself.
+        let alone = NSRunningApplication.runningApplications(withBundleIdentifier: "local.codexsplit.work").allSatisfy { $0.processIdentifier == getpid() }
+        guard !state.attempts.contains(where: \.rejectedReport) else {
+            message("확인 결과가 수용 조건과 달랐던 업무 실행 기록이 있어 새 앱을 열지 않습니다. 재시동으로도 정리되지 않습니다. 기록을 보존한 채 확인을 요청하세요.")
+            return false
+        }
+        guard alone, let id = state.attempts.last?.id, let reason = state.unobservedExit(bootSession: bootSession, exited: \.exited) else {
+            message("업무 실행 중이거나 이전 실행의 종료를 확인하지 못했습니다. 새 앱을 열지 않습니다. 열려 있는 업무 앱이 있으면 그 앱에서 Cmd-Q로 닫은 뒤 런처를 다시 여세요. Mac을 재시동한 뒤에도 정리할 수 있습니다.")
+            return false
+        }
+        let proof = reason == .otherBoot ? "그 뒤 Mac이 재시동되어" : "그 업무 앱 프로세스(pid와 시작 시각)가 더 이상 없음을 확인해"
+        guard consent("런처가 이전 업무 실행의 종료를 관측하지 못했지만, \(proof) 그 실행은 끝났습니다. 이 기록을 '종료 미관측'으로 닫고 계속합니다. 수용 시험이었다면 성공으로 세지 않으며, 기존 기록은 지우지 않습니다.", action: "종료 미관측으로 닫기") else { return false }
+        try coordinator.transaction { try $0.closeUnobserved(id, bootSession: bootSession, exited: \.exited, now: Date()) }
+        // This instance still holds the closed visit's observation state and menu: start fresh.
+        guard context == nil else { message("이전 기록을 닫았습니다. 런처를 다시 열어 주세요."); return false }
+        return true
     }
     // Only a signed, identifier-verified change reaches here; the script re-verifies everything itself.
     private func offerAutomaticUpdate(_ update: WorkUpdateReport) {

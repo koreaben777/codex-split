@@ -62,7 +62,9 @@ struct WorkDailyOpeningFailure: Error {
 }
 
 enum WorkDailyScope: String, Codable { case acceptance, normal }
-enum WorkDailyPhase: String, Codable { case reserved, bound, active, blocked, exitObserved }
+enum WorkDailyPhase: String, Codable { case reserved, bound, active, blocked, exitObserved, exitUnobserved }
+// Kernel proof that a visit's process is gone although no launcher observed its exit.
+enum WorkDailyResolution: String, Codable { case otherBoot, processGone }
 struct WorkDailyAttempt: Codable {
     let id: UUID
     let plan: AppInitialTrialPlan
@@ -84,6 +86,9 @@ struct WorkDailyAttempt: Codable {
     var endedAt: Date?
     var observerLostAt: Date?
     var diagnostic: WorkDailyDiagnostic?
+    var resolvedAt: Date?
+    var resolution: WorkDailyResolution?
+    var closed: Bool { phase == .exitObserved || phase == .exitUnobserved }
     var accepted: Bool {
         scope == .acceptance && phase == .exitObserved && account == .confirmed && personal == .unchanged
             && projectsConnected == true && quitIntentAt != nil && endedAt != nil && heartbeatAt != nil && observerLostAt == nil
@@ -100,10 +105,10 @@ struct WorkDailyAttempt: Codable {
             guard receipt.matches(plan, now: now), receipt.launchedAt >= approvedAt else { return false }
             if let generation {
                 guard generation.matchesScope(receipt) else { return false }
-            } else if phase != .reserved && phase != .blocked { return false }
-            if [heartbeatAt, reportAt, quitIntentAt, endedAt].compactMap({ $0 }).contains(where: { $0 < receipt.launchedAt }) { return false }
+            } else if phase != .reserved && phase != .blocked && phase != .exitUnobserved { return false }
+            if [heartbeatAt, reportAt, quitIntentAt, endedAt, resolvedAt].compactMap({ $0 }).contains(where: { $0 < receipt.launchedAt }) { return false }
         } else if generation != nil || phase == .bound || phase == .active || phase == .exitObserved { return false }
-        for date in [heartbeatAt, reportAt, quitIntentAt, endedAt, observerLostAt].compactMap({ $0 }) {
+        for date in [heartbeatAt, reportAt, quitIntentAt, endedAt, observerLostAt, resolvedAt].compactMap({ $0 }) {
             guard date.timeIntervalSince1970.isFinite, date >= approvedAt, date <= now else { return false }
         }
         guard (account != nil) == (reportAt != nil), (personal != nil) == (reportAt != nil),
@@ -111,13 +116,16 @@ struct WorkDailyAttempt: Codable {
               reportAt == nil || receipt != nil,
               quitIntentAt == nil || (reportAt != nil && account == .confirmed && personal == .unchanged && projectsConnected == true),
               phase != .active || heartbeatAt != nil,
-              (phase == .exitObserved) == (endedAt != nil) else { return false }
+              (phase == .exitObserved) == (endedAt != nil),
+              (phase == .exitUnobserved) == (resolvedAt != nil), (resolvedAt != nil) == (resolution != nil),
+              resolution != .processGone || generation != nil else { return false }
+        if let resolvedAt, [heartbeatAt, reportAt, quitIntentAt, observerLostAt].contains(where: { $0.map { $0 > resolvedAt } ?? false }) { return false }
         if let endedAt, let quitIntentAt, endedAt < quitIntentAt { return false }
         if let quitIntentAt, let reportAt, quitIntentAt < reportAt { return false }
         if let diagnostic {
             guard let observerLostAt, diagnostic.recordedAt >= approvedAt, diagnostic.recordedAt <= observerLostAt,
                   diagnostic.recordedAt <= now, diagnostic.recordedAt.timeIntervalSince1970.isFinite,
-                  phase == .blocked || phase == .exitObserved else { return false }
+                  phase == .blocked || closed else { return false }
         }
         return true
     }
@@ -166,7 +174,7 @@ struct WorkDailyState: Codable {
     var update: WorkDailyUpdateTransition?
     var attempts: [WorkDailyAttempt] = []
     var grant: WorkDailyGrant?
-    var pending: Bool { attempts.last.map { $0.phase != .exitObserved } ?? false }
+    var pending: Bool { attempts.last.map { !$0.closed } ?? false }
     var acceptedCount: Int { attempts.filter(\.accepted).count }
     // The official target and launcher this segment is bound to, even before its first visit.
     var segment: (plan: AppInitialTrialPlan, toolFingerprint: String, directories: [String: WorkDirectory])? {
@@ -194,7 +202,7 @@ struct WorkDailyState: Codable {
               attempts.allSatisfy({ $0.valid(now: now) }) else { return false }
         for index in attempts.indices where index > 0 {
             let previous = attempts[index - 1], current = attempts[index]
-            guard previous.phase == .exitObserved, let ended = previous.endedAt,
+            guard previous.closed, let ended = previous.endedAt ?? previous.resolvedAt,
                   current.plan.requestedAt >= ended, Self.sameTarget(previous.plan, current.plan) else { return false }
         }
         if let grant {
@@ -239,7 +247,7 @@ struct WorkDailyState: Codable {
     private mutating func edit(_ id: UUID, owner: UUID? = nil, bootSession: String? = nil, now: Date,
                               _ action: (inout WorkDailyAttempt) throws -> Void) throws {
         guard valid(now: now), let index = attempts.indices.last, attempts[index].id == id,
-              attempts[index].phase != .exitObserved,
+              !attempts[index].closed,
               owner == nil || attempts[index].owner == owner,
               bootSession == nil || attempts[index].bootSession == bootSession else { throw Failure.processUnknown }
         var attempt = attempts[index]
@@ -300,6 +308,22 @@ struct WorkDailyState: Codable {
             attempt.endedAt = now; attempt.phase = .exitObserved
         }
     }
+    // The unresolved visit may be closed without counting as accepted only when its process is provably
+    // gone: a different boot session, or its exact kernel generation (pid + start time) no longer exists.
+    // `exited` is true only on proof; a visit without a bound generation needs another boot.
+    func unobservedExit(bootSession: String, exited: (WorkProcess) -> Bool?) -> WorkDailyResolution? {
+        guard let attempt = attempts.last, !attempt.closed, !attempts.contains(where: \.rejectedReport) else { return nil }
+        if attempt.bootSession != bootSession { return attempt.generation.map({ exited($0) != false }) ?? true ? .otherBoot : nil }
+        guard let generation = attempt.generation, exited(generation) == true else { return nil }
+        return .processGone
+    }
+    // Re-proves under the lock; the caller obtained consent for exactly this visit.
+    mutating func closeUnobserved(_ id: UUID, bootSession: String, exited: (WorkProcess) -> Bool?, now: Date) throws {
+        guard let reason = unobservedExit(bootSession: bootSession, exited: exited) else { throw Failure.processUnknown }
+        try edit(id, now: now) { attempt in
+            attempt.phase = .exitUnobserved; attempt.resolvedAt = now; attempt.resolution = reason
+        }
+    }
     mutating func approveNormal(toolFingerprint: String, directories: [String: WorkDirectory], accepted: Bool, now: Date) throws {
         guard accepted, valid(now: now), !pending, grant == nil, !attempts.contains(where: \.rejectedReport) else { throw Failure.approvalRequired }
         let acceptedAttempts = Array(attempts.filter(\.accepted).suffix(2))
@@ -331,7 +355,7 @@ struct WorkDailyState: Codable {
             return values.values.allSatisfy { Set($0.keys) == ["device", "inode"] }
         }
         guard let attempts = object["attempts"] as? [[String: Any]] else { return false }
-        let attemptKeys: Set<String> = ["id", "plan", "scope", "approvedAt", "toolFingerprint", "directories", "owner", "bootSession", "phase", "receipt", "generation", "heartbeatAt", "reportAt", "account", "personal", "projectsConnected", "quitIntentAt", "endedAt", "observerLostAt", "diagnostic"]
+        let attemptKeys: Set<String> = ["id", "plan", "scope", "approvedAt", "toolFingerprint", "directories", "owner", "bootSession", "phase", "receipt", "generation", "heartbeatAt", "reportAt", "account", "personal", "projectsConnected", "quitIntentAt", "endedAt", "observerLostAt", "diagnostic", "resolvedAt", "resolution"]
         for attempt in attempts {
             guard Set(attempt.keys).isSubset(of: attemptKeys), plan(attempt["plan"]), directories(attempt["directories"]) else { return false }
             if let diagnostic = attempt["diagnostic"] {

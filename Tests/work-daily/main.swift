@@ -110,6 +110,57 @@ let unknownID = try reserve(&unknown, unknownP)
 try unknown.observerLost(unknownID, owner: owner, bootSession: boot, now: time)
 check(unknown.pending, "실행 결과 불명확 시 예약 보존")
 rejected("바인딩 없는 종료 기록 차단") { try unknown.exit(unknownID, generation: generation, owner: owner, bootSession: boot, now: time) }
+// 관측 없이 끝난 실행: 커널 증명이 있을 때만 '종료 미관측'으로 닫고, 수용 성공으로 세지 않는다.
+var stale = WorkDailyState()
+let staleP = plan()
+let staleID = try reserve(&stale, staleP)
+let staleGeneration = try bind(&stale, staleID, staleP)
+try stale.heartbeat(staleID, owner: owner, bootSession: boot, now: time)
+try stale.report(staleID, account: .confirmed, personal: .unchanged, projectsConnected: true, now: time)
+try stale.quitIntent(staleID, owner: owner, bootSession: boot, now: time)
+check(stale.unobservedExit(bootSession: boot, exited: { _ in false }) == nil, "실행 중인 세대는 닫지 않음")
+check(stale.unobservedExit(bootSession: boot, exited: { _ in nil }) == nil, "확인 불가 세대는 닫지 않음")
+check(stale.unobservedExit(bootSession: UUID().uuidString, exited: { _ in nil }) == .otherBoot, "다른 부팅이면 종료 증명")
+check(stale.unobservedExit(bootSession: UUID().uuidString, exited: { _ in false }) == nil, "부팅 ID가 달라도 같은 세대가 살아 있으면 닫지 않음")
+rejected("증명 없는 닫기 거부") { var copy = stale; try copy.closeUnobserved(staleID, bootSession: boot, exited: { _ in nil }, now: time.addingTimeInterval(1)) }
+rejected("다른 실행 닫기 거부") { var copy = stale; try copy.closeUnobserved(UUID(), bootSession: boot, exited: { _ in true }, now: time.addingTimeInterval(1)) }
+try stale.closeUnobserved(staleID, bootSession: boot, exited: { $0 == staleGeneration }, now: time.addingTimeInterval(1))
+check(!stale.pending && stale.attempts[0].resolution == .processGone && stale.acceptedCount == 0, "닫힌 실행은 미해결도 수용 성공도 아님")
+rejected("닫힌 실행을 종료 관측으로 바꾸지 않음") { try stale.exit(staleID, generation: staleGeneration, owner: owner, bootSession: boot, now: time.addingTimeInterval(2)) }
+let staleNext = try reserve(&stale, plan(time.addingTimeInterval(2)))
+check(stale.attempts.last?.id == staleNext, "닫은 뒤 다음 수용 예약 가능")
+let staleJSON = try JSONEncoder().encode(stale)
+check(try WorkDailyState.decode(staleJSON, now: time.addingTimeInterval(3)).attempts[0].phase == .exitUnobserved, "종료 미관측 기록 왕복")
+var staleObject = try JSONSerialization.jsonObject(with: staleJSON) as! [String: Any]
+var staleEntries = staleObject["attempts"] as! [[String: Any]]
+staleEntries[0]["resolution"] = nil
+staleObject["attempts"] = staleEntries
+rejected("근거 없는 종료 미관측 거부") { _ = try WorkDailyState.decode(JSONSerialization.data(withJSONObject: staleObject), now: time.addingTimeInterval(3)) }
+var forged = stale
+forged.attempts[0].generation = nil; forged.attempts[0].phase = .exitUnobserved
+check(!forged.valid(now: time.addingTimeInterval(3)), "세대 없는 processGone 기록 거부")
+forged = stale
+forged.attempts[0].resolvedAt = time.addingTimeInterval(-1)
+check(!forged.valid(now: time.addingTimeInterval(3)), "실행 전 시각의 종료 미관측 거부")
+var unbound = WorkDailyState()
+let unboundID = try reserve(&unbound, plan())
+try unbound.observerLost(unboundID, owner: owner, bootSession: boot, now: time)
+check(unbound.unobservedExit(bootSession: boot, exited: { _ in true }) == nil, "세대 연결 전 실패는 같은 부팅에서 닫지 않음")
+check(unbound.unobservedExit(bootSession: UUID().uuidString, exited: { _ in nil }) == .otherBoot, "세대 연결 전 실패도 재시동 뒤 닫기 가능")
+var refusedReport = WorkDailyState()
+let refusedP = plan()
+let refusedID = try reserve(&refusedReport, refusedP)
+_ = try bind(&refusedReport, refusedID, refusedP)
+try refusedReport.report(refusedID, account: .mismatch, personal: .unknown, projectsConnected: false, now: time)
+check(refusedReport.unobservedExit(bootSession: UUID().uuidString, exited: { _ in true }) == nil, "거부된 보고는 닫기로 우회하지 않음")
+let me = try WorkProcess.exact(getpid())
+check(me.exited == false, "살아 있는 세대는 종료로 보지 않음")
+check(WorkProcess(pid: me.pid, uid: me.uid, startSeconds: me.startSeconds + 1, startMicroseconds: me.startMicroseconds, executable: me.executable).exited == true,
+      "같은 pid의 다른 시작 시각은 이전 세대 종료 증명")
+let child = Process()
+child.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+try child.run(); child.waitUntilExit()
+check(WorkProcess(pid: child.processIdentifier, uid: me.uid, startSeconds: 1, startMicroseconds: 0, executable: "/usr/bin/true").exited == true, "회수된 프로세스는 종료 증명")
 let encoded = try JSONEncoder().encode(state)
 check(try WorkDailyState.decode(encoded, now: time.addingTimeInterval(10)).grant != nil, "별도 기록 왕복")
 var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]

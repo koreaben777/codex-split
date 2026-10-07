@@ -13,6 +13,14 @@ struct WorkProcess: Codable, Equatable {
         pid == receipt.pid && pid > 0 && uid == getuid() && startSeconds > 0 &&
             startMicroseconds < 1_000_000 && executable == receipt.plan.executablePath
     }
+    // true: this generation provably no longer exists (pid free, or reused by a later process).
+    // false: still running. nil: cannot tell.
+    var exited: Bool? {
+        if kill(pid, 0) != 0 && errno == ESRCH { return true }
+        guard let current = try? Self.exact(pid) else { return nil }
+        if current == self { return false }
+        return current.startSeconds != startSeconds || current.startMicroseconds != startMicroseconds ? true : nil
+    }
     static func exact(_ pid: Int32) throws -> Self {
         var value = CSObservedProcess()
         guard cs_observer_process(pid, &value) == 0 else { throw Failure.processUnknown }

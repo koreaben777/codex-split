@@ -103,7 +103,7 @@ def visit_idle(control):
         replacement.safe(control / name, private=True)
     daily = read_daily(control)
     attempts = daily.get('attempts', [])
-    require(not attempts or attempts[-1].get('phase') == 'exitObserved', '미해결 업무 실행 존재')
+    require(not attempts or attempts[-1].get('phase') in ('exitObserved', 'exitUnobserved'), '미해결 업무 실행 존재')
     return daily
 
 
