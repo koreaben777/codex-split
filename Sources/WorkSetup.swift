@@ -23,6 +23,8 @@ struct WorkSetupRecord: Codable {
     var pending = false
     // Flat, immutable prior attempts. Optional preserves decoding of the original record.
     var previousAttempts: [WorkSetupRecord]?
+    // Present when an existing profile was moved in by `--adopt`; nil for a fresh setup.
+    var adoption: WorkSetupAdoption?
     var canResumeDeferredLogin: Bool {
         !pending && visits.count == 1 && verifications.count == 1 && launchApprovals.count == 1
             && visits[0].session.state == .mainAppExitedAfterQuitIntent
@@ -52,6 +54,7 @@ struct WorkSetupRecord: Codable {
               visits.enumerated().allSatisfy({ i,v in v.session.receipt.plan == plan && v.session.validRecord(now: now)
                   && v.session.receipt.launchedAt >= verifications[i].checkedAt }) else { return false }
         if plan.domain == .production && !plan.isRecordedWorkPlan { return false }
+        if let adoption, !adoption.valid(root: plan.root, approvedAt: approvedAt, now: now) || previousAttempts != nil { return false }
         if visits.count == 2 && !accepted(visits[0]) { return false }
         if !pending && visits.contains(where: { $0.session.state != .mainAppExitedAfterQuitIntent }) { return false }
         let history = previousAttempts ?? []
@@ -75,12 +78,15 @@ struct WorkSetupCoordinator {
     }
     static func synthetic(store: PrivateStore, now: @escaping () -> Date) -> Self { Self(store: store, now: now, domain: .synthetic) }
     fileprivate static func production(store: PrivateStore, now: @escaping () -> Date) -> Self { Self(store: store, now: now, domain: .production) }
-    func initialize(plan: AppInitialTrialPlan, approvedAt: Date) throws {
+    func initialize(plan: AppInitialTrialPlan, approvedAt: Date, adoption: WorkSetupAdoption? = nil) throws {
         guard plan.domain == domain, approvedAt >= plan.requestedAt, approvedAt <= now() else { throw Failure.approvalRequired }
         if domain == .production && plan != .workSetup(requestedAt: plan.requestedAt, requestID: plan.requestID) { throw Failure.identityMismatch }
         try store.transaction { state in
             guard state.workSetup == nil, state.pending.isEmpty else { throw Failure.processUnknown }
-            state.workSetup = WorkSetupRecord(plan: plan, approvedAt: approvedAt)
+            var record = WorkSetupRecord(plan: plan, approvedAt: approvedAt)
+            record.adoption = adoption
+            guard record.valid(now: now()) else { throw Failure.stateInvalid }
+            state.workSetup = record
         }
     }
     func resume(expectedPriorPlan: AppInitialTrialPlan, plan: AppInitialTrialPlan, approvedAt: Date) throws {
@@ -161,7 +167,9 @@ struct WorkSetupCoordinator {
 }
 
 enum ProductionWorkSetup {
-    static func run(resume: Bool = false) throws {
+    enum Mode: Equatable { case setup, resume, adopt(from: String) }
+    static func run(_ mode: Mode = .setup) throws {
+        let resume = mode == .resume
         try ProductionInitialTrial.requireTerminal()
         let plan = AppInitialTrialPlan.workSetup(requestedAt: Date())
         print("업무 로그인 및 재실행 1회 수용 시험. 일상 사용/설치/모델 요청 승인은 아닙니다.")
@@ -178,7 +186,20 @@ enum ProductionWorkSetup {
         let store: PrivateStore
         let coordinator: WorkSetupCoordinator
         let approvedAt: Date
-        if resume {
+        if case .adopt(let source) = mode {
+            print("기존 업무 프로필 채택: \(source) → \(plan.root)")
+            print("같은 디스크 안에서 이름만 바꿔 옮깁니다(복사·삭제 없음). 이전 control 기록은 \(CodexSplitPaths.support)/legacy에 그대로 보존합니다.")
+            print("공식 앱이 내부에 예전 경로를 저장했다면 대화 목록·로그인이 달라질 수 있습니다. 문제가 있으면 기록을 보존하고 docs의 되돌리기 절차를 따르세요.")
+            print("업무 앱·런처·관련 helper가 모두 종료돼 있어야 합니다. 실행 중이면 이동하지 않습니다.")
+            guard try ProductionInitialTrial.answer("기존 프로필을 옮기고 로그인 유지 확인 방문 2회를 승인하려면 ADOPT work 입력:") == "ADOPT work" else { throw Failure.approvalRequired }
+            approvedAt = Date()
+            let adoption = try WorkProfileAdopter.production().adopt(from: source, to: plan.root, legacy: CodexSplitPaths.support + "/legacy")
+            lease = try AppTrialRootLease.resumeWork(plan)
+            store = try PrivateStore(root: plan.root + "/control")
+            coordinator = WorkSetupCoordinator.production(store: store, now: Date.init)
+            try coordinator.initialize(plan: plan, approvedAt: approvedAt, adoption: adoption)
+            print("이동 완료. 이전 기록: \(adoption.legacyControl ?? "없음")")
+        } else if resume {
             lease = try AppTrialRootLease.resumeWork(plan)
             store = try PrivateStore(root: plan.root + "/control")
             coordinator = WorkSetupCoordinator.production(store: store, now: Date.init)
@@ -209,15 +230,15 @@ enum ProductionWorkSetup {
             var adapter: AppInitialTrialObjectAdapter<NSRunningApplication>?
             let receipt = try coordinator.submit(plan: plan, approval: approval, inspect: {
                 try ProductionInitialTrial.requireTerminal()
-                try lease.validate(requireEmpty: !resume && index == 0)
+                try lease.validate(requireEmpty: mode == .setup && index == 0)
                 try ProductionInitialTrial.checkBinaries(plan)
                 guard fileDigest(toolPath) == toolHash else { throw Failure.identityMismatch }
-                try lease.validate(requireEmpty: !resume && index == 0)
+                try lease.validate(requireEmpty: mode == .setup && index == 0)
                 return WorkSetupVerification(plan: plan, checkedAt: Date(), toolFingerprint: toolHash, strictIdentityAndPinsVerified: true)
             }, open: {
-                try lease.validate(requireEmpty: !resume && index == 0)
+                try lease.validate(requireEmpty: mode == .setup && index == 0)
                 let bound = try ProductionInitialTrial.openVerified(plan, consentExpiresAt: approval.addingTimeInterval(120), finalCheck: {
-                    try lease.validate(requireEmpty: !resume && index == 0)
+                    try lease.validate(requireEmpty: mode == .setup && index == 0)
                     guard fileDigest(toolPath) == toolHash else { throw Failure.identityMismatch }
                 })
                 adapter = bound
@@ -227,7 +248,8 @@ enum ProductionWorkSetup {
             print("새 업무 객체 PID \(receipt.pid). 30초 안에 새 창을 클릭해 귀속을 확인하세요."); fflush(stdout)
             try ProductionInitialTrial.pump(until: { adapter.matchesFrontmost(NSWorkspace.shared.frontmostApplication, now: Date()) }, seconds: 30)
             if index == 0 {
-                print("LOGIN READY — 식별된 업무 창의 공식 UI에서 직접 업무 로그인하세요. 암호/토큰은 Terminal에 입력하지 마세요.")
+                print(mode == .setup ? "LOGIN READY — 식별된 업무 창의 공식 UI에서 직접 업무 로그인하세요. 암호/토큰은 Terminal에 입력하지 마세요."
+                    : "READY — 식별된 업무 창에서 기존 업무 로그인·대화·프로젝트가 유지되는지 확인하세요. 로그인이 풀렸다면 이 창의 공식 UI에서 직접 로그인할 수 있습니다. 암호/토큰은 Terminal에 입력하지 마세요.")
             } else { print("재실행 계정 유지 확인만 하세요. 재로그인이 필요하면 loginRequired; 여기서 재로그인하지 마세요.") }
             print("업무 앱 계정 표시를 확인하고 기존 개인 앱도 직접 확인하세요. 개인 앱을 종료/로그아웃하지 마세요.")
             let accountText = try ProductionInitialTrial.answer("업무 창 확인 결과: confirmed / mismatch / loginRequired:")

@@ -214,6 +214,20 @@ class InstallTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'edge'): self.deploy(root=root)
         self.assert_untouched()
 
+    def test_install_new_retires_earlier_launcher_without_deleting(self):
+        legacy = Path(self.tmp.name).resolve() / 'legacy'
+        def busy(): raise RuntimeError('런처 실행 중')
+        with self.assertRaises(RuntimeError):
+            m.install_new(self.base, destination=self.destination, verify_signature=lambda p: None, base=self.base,
+                          retire_existing=True, legacy=legacy, check_idle=busy)
+        self.assertEqual(m.replacement.manifest(self.destination), self.old)
+        m.install_new(self.base, destination=self.destination, verify_signature=lambda p: None, base=self.base,
+                      retire_existing=True, legacy=legacy, check_idle=lambda: None)
+        self.assertEqual(m.replacement.manifest(self.destination), self.new)
+        retired = list(legacy.glob('launcher-*.app'))
+        self.assertEqual(len(retired), 1)
+        self.assertEqual(m.replacement.manifest(retired[0]), self.old)
+
     def test_unreviewed_or_foreign_candidate_blocks(self):
         for kw in ({'phase': 'blocked-tests'}, {'source_id': 'work-update-' + 'c' * 32}):
             root = self.candidate(**kw)

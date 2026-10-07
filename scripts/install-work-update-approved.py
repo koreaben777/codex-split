@@ -4,7 +4,7 @@
 교체는 launcher_replacement.py의 백업·배타 이동·영수증 절차를 쓴다. 설치는 실행 허가가 아니다.
 새 수용 구간은 설치된 런처에서 사용자의 별도 동의로만 시작한다.
 
-  --install-new   (처음 설치: 이 checkout에서 빌드한 런처, 설치 경로가 비어 있을 때만)
+  --install-new [--retire-existing]   (처음 설치: 이 checkout의 런처. 이전 위치용 런처가 있으면 legacy로 옮긴 뒤 설치)
   --manifest BUNDLE   (bundle 전체 manifest SHA-256 출력: 아래 인자와 REVIEW.json에 사용)
   --preflight|--install --candidate-root DIR --review REVIEW.json --from-manifest-sha256 X --to-manifest-sha256 Y
   --bind-update --receipt RESULT.json --candidate-root DIR --review REVIEW.json   (교체 후 binding 기록만 재시도)
@@ -17,6 +17,7 @@ BASE = Path(__file__).resolve().parent.parent
 HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)  # account database, not $HOME
 DESTINATION = HOME / 'Applications/CodexSplit-work.app'
 CONTROL = HOME / 'Library/Application Support/CodexSplit/profiles/work/control'
+LEGACY = HOME / 'Library/Application Support/CodexSplit/legacy'
 ICON = 'Contents/Resources/CodexSplit-work.icns'
 REVIEW_ITEMS = ('baseline', 'release-evidence', 'identity', 'storage-auth-ipc', 'preservation-recovery', 'trial-consent')
 
@@ -233,11 +234,21 @@ def restore(receipt, destination=DESTINATION, control=CONTROL, verify_signature=
         os.close(lock)
 
 
-def install_new(source_root=BASE, destination=DESTINATION, verify_signature=replacement.signed, base=BASE):
-    """First installation only: the launcher built in this checkout, into an absent destination."""
+def install_new(source_root=BASE, destination=DESTINATION, verify_signature=replacement.signed, base=BASE,
+                retire_existing=False, legacy=LEGACY, check_idle=launcher_idle):
+    """First installation: the launcher built in this checkout. With retire_existing, a launcher
+    from an earlier profile location is first moved (not deleted) into the legacy folder."""
     info = candidate(source_root, base)
     require(info['reviewID'] is None, '처음 설치는 이 checkout의 빌드만 사용')
-    require(not os.path.lexists(destination), '설치 경로가 이미 있음: 교체는 --install을 사용')
+    if retire_existing and os.path.lexists(destination):
+        check_idle()
+        legacy.mkdir(mode=0o700, parents=True, exist_ok=True)
+        replacement.safe(legacy, directory=True, private=True)
+        retired = legacy / ('launcher-' + uuid.uuid4().hex + '.app')
+        replacement.rename_exclusive(destination, retired)
+        replacement.sync_directory(destination.parent); replacement.sync_directory(legacy)
+        print('기존 런처 보존: ' + str(retired))
+    require(not os.path.lexists(destination), '설치 경로가 이미 있음: 교체는 --install, 이전 위치 런처는 --install-new --retire-existing')
     destination.parent.mkdir(mode=0o700, exist_ok=True)
     bundle = info['root'] / '.build/CodexSplit-work-standalone.app'
     new = replacement.manifest(bundle)
@@ -257,8 +268,8 @@ def main(args):
     if args[:1] == ['--manifest']:  # values for --from/--to-manifest-sha256 and REVIEW.json
         require(len(args) == 2, '잘못된 인자')
         print(replacement.manifest_digest(replacement.manifest(Path(args[1]).resolve()))); return
-    if args == ['--install-new']:
-        print('설치 완료: ' + str(install_new()) + '; 앱 실행 없음. 업무 설정 뒤 런처를 열어 수용 시험을 시작하세요.'); return
+    if args in (['--install-new'], ['--install-new', '--retire-existing']):
+        print('설치 완료: ' + str(install_new(retire_existing=len(args) == 2)) + '; 앱 실행 없음. 업무 설정 뒤 런처를 열어 수용 시험을 시작하세요.'); return
     if args[:1] == ['--restore-backup']:
         require(len(args) == 3 and args[1] == '--receipt', '잘못된 인자')
         restore(args[2]); print('이전 런처 복원 완료; 업무 기록·공식 앱 변경 없음; 앱 실행 없음.'); return

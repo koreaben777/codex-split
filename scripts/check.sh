@@ -17,7 +17,7 @@ xcrun clang -Wall -Wextra -Werror Tests/NativeObserver.c .build/Native.o -o .bui
 .build/native-observer-check "$PWD/.test-data/native-observer-$$.marker"
 xcrun clang -Wall -Wextra -Werror Tests/NativePreparation.c .build/Native.o -o .build/native-preparation-check
 .build/native-preparation-check
-for suite in app-opening app-approval app-runtime app-trial; do
+for suite in app-opening app-approval app-runtime app-trial work-adoption; do
     swift_check "$suite-check" "Tests/$suite/main.swift"
     ".build/$suite-check"
 done

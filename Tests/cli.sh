@@ -50,8 +50,11 @@ test "$result" -eq 64
 set +e
 .build/codex-split-work-setup --unknown work < /dev/null > "$scratch/work-ui-result"
 setup_result=$?
+.build/codex-split-work-setup --adopt work --from relative/root < /dev/null > "$scratch/work-ui-result"
+adopt_result=$?
 set -e
 test "$setup_result" -eq 64
+test "$adopt_result" -eq 64
 for command in update-check update-plan; do
     set +e
     "$cli" "$command" work --force > "$scratch/result"

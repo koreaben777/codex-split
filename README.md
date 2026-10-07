@@ -46,6 +46,17 @@ sh scripts/check.sh
    ```
 4. **수용과 일상 사용** — `CodexSplit-work.app`을 열어 수용 시험을 두 번 진행합니다. 메뉴 막대의 `업무` 메뉴에서 계정·개인 앱·프로젝트 확인과 정상 종료 준비를 선택하고, 해당 업무 창에서 Cmd-Q 합니다. 두 번 성공하면 런처가 일상 사용 허용을 묻습니다.
 
+### 다른 위치의 기존 업무 프로필 옮기기
+
+`codex`, `desktop`, `cwd`(선택: `control`) 구조의 기존 업무 프로필이 다른 위치에 있으면, 2단계 대신 다음으로 옮겨 계속 쓸 수 있습니다. 업무 앱·런처·관련 helper를 모두 종료한 뒤 실행합니다.
+
+```sh
+.build/codex-split-work-setup --adopt work --from /absolute/path/to/old/work
+python3 scripts/install-work-update-approved.py --install-new --retire-existing
+```
+
+같은 디스크 안에서 이름만 바꿔 옮기며(복사·삭제 없음), 이전 `control` 기록은 `~/Library/Application Support/CodexSplit/legacy/`에 그대로 보존합니다. 이동 뒤 로그인 유지를 확인하는 방문 2회로 설정을 마치고, 이전 위치용 런처도 legacy 폴더로 옮긴 뒤 새 런처를 설치합니다. 공식 앱이 내부에 예전 절대 경로를 저장했다면 대화 목록이 달라질 수 있으니 첫 방문에서 확인하세요. 되돌릴 때는 업무 앱을 종료하고 이름 변경을 반대로 하면 됩니다(새 `control`은 따로 보관).
+
 런처 아이콘은 선택 사항입니다. `Assets/WorkIcon/CodexSplit-work.icns`를 두면 빌드에 포함되고, 업데이트 교체 시에도 같은 아이콘을 유지해야 합니다(저장소에는 포함하지 않습니다).
 
 ## 업데이트
