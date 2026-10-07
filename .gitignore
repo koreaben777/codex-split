@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.test-data/
+.live-tests/
+.profiles/
+.env
+.env.*
+!.env.example
+auth.json
+*.pem
+*.key
+__pycache__/
+# Optional local launcher icon; not distributed.
+Assets/
