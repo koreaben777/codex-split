@@ -77,16 +77,17 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
     private lazy var startScheduler = WorkDailyStartScheduler { [weak self] in self?.start() }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        configureMenu()
         startScheduler.schedule()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !submitting { startScheduler.schedule() }
         return false
     }
+    // Acceptance visits only: daily use has no menu bar item and ends with Cmd-Q in the work app.
     private func configureMenu() {
+        guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "업무"
+        item.button?.title = "업무 확인"
         let menu = NSMenu()
         for (title, action) in [("상태 확인", #selector(showStatus)), ("앱 업데이트 확인", #selector(showUpdateStatus)), ("계정·개인 앱·프로젝트 확인", #selector(reportUI)),
                                 ("업무 앱 정상 종료 준비", #selector(prepareQuit)), ("런처 관측 종료", #selector(stopObserver))] {
@@ -172,6 +173,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             if scope == .acceptance {
                 let accepted = consent("기존 업무 로그인과 업무 프로젝트를 유지하여 업무 창 하나를 여는 수용 시험입니다. 로그인·모델 요청·이전 자료 복원·개인 앱 제어는 하지 않습니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있습니다. 완전한 인증 분리는 보장하지 않습니다. 계정·개인 상태·프로젝트를 확인한 뒤 메뉴의 종료 준비 안내를 따라 해당 업무 앱만 직접 종료하세요. 문제가 있으면 기록을 보존하고 자동 재실행하지 않습니다.", action: "업무 창 열기 1회")
                 guard accepted else { NSApplication.shared.terminate(nil); return }
+                configureMenu()
             }
             let consentAt = Date()
             let submitted = try context.coordinator.submit(plan: plan, scope: scope, accepted: true, consentAt: consentAt,
@@ -207,7 +209,6 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             failureStage = .initialHeartbeat
             try context.coordinator.transaction { try $0.heartbeat(submitted.attemptID, owner: owner, bootSession: context.bootSession, now: Date()) }
             lastHeartbeat = Date()
-            statusItem?.button?.title = scope == .acceptance ? "업무 확인" : "업무"
             beginPolling()
         } catch {
             let diagnostic = failureDiagnostic(error, fallback: failureStage)
@@ -316,6 +317,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             let diagnostic = failureDiagnostic(error, fallback: stage)
             markLost(diagnostic: diagnostic); closeObservation()
             message("업무 앱의 종료 관측이 끊겼습니다. 업무 앱은 종료하지 않았으며 미해결 예약을 보존했습니다. 반복 실행하거나 다른 앱을 대신 종료하지 말고 상태 확인을 요청하세요.\n단계: \(diagnostic.stage.korean)\n오류 코드: \(diagnostic.reason.rawValue)")
+            if statusItem == nil { NSApplication.shared.terminate(nil) } // daily use: no menu left to act on
         }
     }
     @objc private func showStatus() {
