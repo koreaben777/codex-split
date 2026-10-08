@@ -238,6 +238,14 @@ def notify(message):
                     '-e', 'end run', message], capture_output=True, timeout=30, check=False)
 
 
+def show_progress(run):
+    # Read-only window over this run (RESULT.json, checks.log); closing it never affects the run. Best effort.
+    viewer = BASE / '.build/codex-split-update-progress'
+    if viewer.is_file():
+        subprocess.Popen([str(viewer), str(run)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+
 def automatic_review(state, report, isolation, consented_at, to_manifest_sha):
     observed = report['observed']
     identity = 'app {} / {} sha256 {}; cli {} / {} sha256 {}; app.asar sha256 {}; OpenAI 2DC432GLL2 strict 서명'.format(
@@ -376,7 +384,7 @@ def automatic(base, run, consented_at, now=None, pipeline_run=pipeline, installe
                     raise
         state.update(phase='installed', receipt=installed['receipt'], backup=installed['backup'])
         write_json(run / 'RESULT.json', state)
-        alert('업무 런처를 새 버전용으로 교체했습니다. 런처를 열어 새 수용 시험을 시작하세요.')
+        alert('업무 런처를 새 버전용으로 교체했습니다. 런처를 열어 새 구간을 시작하세요.')
     except Exception as error:
         state['phase'] = 'blocked-install'
         state['errorType'] = type(error).__name__
@@ -415,6 +423,8 @@ def main():
         run = runs / uuid.uuid4().hex
         run.mkdir(mode=0o700)
         print('자동 검사·후보 빌드 기록: ' + str(run), flush=True)
+        if options.auto:
+            show_progress(run)
         source = deployed_source(BASE, runs)
         print('후보 원본 소스: ' + str(source), flush=True)
         state = automatic(source, run, options.consented_at) if options.auto else pipeline(source, run)

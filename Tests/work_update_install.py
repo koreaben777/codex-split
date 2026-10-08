@@ -175,6 +175,13 @@ class InstallTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'edge'): self.deploy(root=root)
         self.assert_untouched()
 
+    def test_launcher_detection_uses_executable_paths(self):
+        app = '/Users/x/Applications/CodexSplit-work.app/Contents/MacOS/launcher'
+        self.assertTrue(m.launcher_running('/usr/bin/login\n' + app + '\n'))
+        self.assertTrue(m.launcher_running('/Users/x/Projects/s/.build/CodexSplit-work-standalone.app/Contents/MacOS/launcher\n'))
+        self.assertFalse(m.launcher_running('/usr/bin/shasum\n/bin/zsh\n'))  # comm never carries arguments
+        self.assertFalse(m.launcher_running(app + '.bak\n'))
+
     def test_installed_icon_must_be_kept(self):
         (self.destination / 'Contents/Resources').mkdir()
         (self.destination / 'Contents/Resources/CodexSplit-work.icns').write_bytes(b'icns-local')

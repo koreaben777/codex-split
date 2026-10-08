@@ -292,7 +292,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
         guard consent(update.summary + "\n\n자동 대응: 서명·pin 재확인, 업무 저장소 분리 표식 정적 점검, 격리 후보 빌드와 전체 시험(10분 안팎) 뒤 이 런처가 닫혀 있으면 백업을 남기고 런처를 교체합니다. 공식 변경 내역은 사람이 검토하지 않습니다. 교체 뒤 런처를 다시 열면 새 구간이 시작됩니다. 지금 일상 사용 허용이 있으면 첫 업무 창에서 확인 한 번으로 허용이 이어지고, 없으면 수용 시험 두 번과 일상 허용을 받습니다. 교체가 끝날 때까지 업무 앱은 열지 않습니다. 실패하면 기존 런처와 기록을 그대로 둡니다.", action: "자동 대응 시작") else { return }
         do {
             try WorkUpdateAutomation.start(consentedAt: Date())
-            message("자동 대응을 시작했습니다. 완료나 중단은 알림으로 알려 드립니다. 이 런처는 닫힙니다.")
+            message("자동 대응을 시작했습니다. 진행 상황은 '업데이트 자동 대응' 창에서 볼 수 있고, 완료나 중단은 알림으로도 알려 드립니다. 이 런처는 닫힙니다.")
         } catch {
             message("자동 대응을 시작하지 못했습니다. 업무 기록과 런처는 그대로입니다.\n" + WorkUpdateGuide.blockedLaunch)
         }

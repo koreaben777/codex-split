@@ -71,4 +71,16 @@ for name in ["update-check", "update-plan"] {
     check((try? Command.parse([name, "personal"])) == nil, "work only")
     check((try? Command.parse([name, "work", "--force"])) == nil, "no force flag")
 }
+// Progress window text: read-only view of the run's own files.
+func progress(_ phase: String?, review: Bool = false, launcher: Bool = false, alive: Bool = true, error: String? = nil) -> WorkUpdateProgress {
+    .describe(phase: phase, reviewWritten: review, launcherRunning: launcher, runnerAlive: alive, lastCheck: "12 checks passed", error: error)
+}
+check(progress(nil).step == 1 && !progress(nil).finished, "progress: before the first record")
+check(progress("testing").step == 2 && progress("testing").text.contains("12 checks passed"), "progress: tests show the latest check line")
+check(progress("awaiting-compatibility-review").step == 3, "progress: review record pending")
+check(progress("awaiting-compatibility-review", review: true, launcher: true).text.contains("Cmd-Q"), "progress: waiting for the launcher to close")
+check(progress("awaiting-compatibility-review", review: true).step == 4 && !progress("awaiting-compatibility-review", review: true).finished, "progress: replacing")
+check(progress("installed", alive: false).finished && progress("installed", alive: false).text.hasPrefix("완료"), "progress: installed is final")
+check(progress("blocked-install", alive: false, error: "아이콘").text.contains("blocked-install") && progress("blocked-install", alive: false, error: "아이콘").text.contains("아이콘"), "progress: blocked shows the reason")
+check(progress("testing", alive: false).finished && progress("testing", alive: false).text.contains("결과 기록 없이"), "progress: a run that vanished is reported, not assumed")
 print("Work update checks passed: \(checks)")

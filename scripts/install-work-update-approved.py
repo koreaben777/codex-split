@@ -83,9 +83,14 @@ def official_pinned(root):
     require(result.returncode == 0 and report.get('status') == 'pinned', '공식 앱이 후보 pin과 일치하지 않거나 서명 미확인')
 
 
+def launcher_running(listing):
+    # Executable paths only (ps comm): a command that merely mentions the path, like shasum, is not a launcher.
+    return any(re.fullmatch(r'.*/CodexSplit-work[^/]*\.app/Contents/MacOS/launcher', line.strip()) for line in listing.splitlines())
+
+
 def launcher_idle():
-    result = subprocess.run(['/usr/bin/pgrep', '-f', r'CodexSplit-work[^/]*\.app/Contents/MacOS/launcher'], capture_output=True)
-    require(result.returncode == 1, '업무 런처 실행 중이거나 확인 불가')
+    result = subprocess.run(['/bin/ps', '-axo', 'comm='], capture_output=True, text=True)
+    require(result.returncode == 0 and not launcher_running(result.stdout), '업무 런처 실행 중이거나 확인 불가')
 
 
 def read_daily(control):
