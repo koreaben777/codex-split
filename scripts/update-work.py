@@ -349,6 +349,32 @@ def deployed_source(base, runs, installed=INSTALLED_LAUNCHER):
     return base if pin_block(base) == pin_block(matches[0]) else matches[0]
 
 
+def sync_pins(checkout, candidate, review_id):
+    """After an installed update, carry the deployed pin block into the operational checkout so its
+    later changes ship (deployed_source) and the next edge starts from it. Only the managed block of
+    Sources/AppTrial.swift changes, committed with HEAD's own author (the configured identity may be
+    a private address the branch deliberately avoids) and UTC dates. Never pushes."""
+    trial = checkout / 'Sources/AppTrial.swift'
+    text, start, end, current, history = read_pins(trial)
+    deployed, deployed_start, deployed_end, _, deployed_history = read_pins(candidate / 'Sources/AppTrial.swift')
+    block = deployed[deployed_start:deployed_end]
+    if block == text[start:end]:
+        return 'already'
+    require(deployed_history == [current] + history, '원본 폴더의 고정값이 배포 후보의 이전 버전과 다름')
+    def git(*args, env=None):
+        return subprocess.run(['/usr/bin/git', '-C', str(checkout)] + list(args), capture_output=True, text=True, timeout=60, env=env)
+    require(git('diff', '--quiet', 'HEAD', '--', 'Sources/AppTrial.swift').returncode == 0, '원본 폴더의 AppTrial.swift에 커밋되지 않은 변경 있음')
+    author = git('log', '-1', '--format=%an%n%ae').stdout.split('\n')
+    require(len(author) >= 2 and author[0] and author[1], '원본 폴더 커밋 작성자 확인 불가')
+    trial.write_text(text[:start] + block + text[end:])
+    version = re.search(r'appVersion: "([^"]+)", appBuild: "([^"]+)"', block)
+    env = dict(os.environ, TZ='UTC', GIT_AUTHOR_NAME=author[0], GIT_AUTHOR_EMAIL=author[1],
+               GIT_COMMITTER_NAME=author[0], GIT_COMMITTER_EMAIL=author[1])
+    message = 'Pin {} ({}) after automatic update {}'.format(version.group(1), version.group(2), review_id)
+    committed = git('commit', '--only', '-q', '-m', message, '--', 'Sources/AppTrial.swift', env=env).returncode == 0
+    return 'committed' if committed else 'written-uncommitted'
+
+
 def pin_block(root):
     text, start, end, _, _ = read_pins(root / 'Sources/AppTrial.swift')
     return text[start:end]
@@ -361,7 +387,7 @@ def load_installer(base):
     return module
 
 
-def automatic(base, run, consented_at, now=None, pipeline_run=pipeline, installer=None, sleep=None, alert=notify):
+def automatic(base, run, consented_at, now=None, pipeline_run=pipeline, installer=None, sleep=None, alert=notify, checkout=BASE):
     """Launcher-consented response: candidate, checks, then a backed-up replacement. Never a new segment."""
     import time
     require(0 <= (now or time.time)() - consented_at < 120, '자동 대응 동의 만료')
@@ -391,8 +417,14 @@ def automatic(base, run, consented_at, now=None, pipeline_run=pipeline, installe
                 if attempt == 2 or '런처 실행 중' not in str(error):
                     raise
         state.update(phase='installed', receipt=installed['receipt'], backup=installed['backup'])
+        try:  # the replacement is done; a failed sync only leaves the checkout as it was
+            state['pinSync'] = sync_pins(checkout, candidate, state['reviewID'])
+        except Exception as error:
+            state['pinSync'] = 'skipped: ' + (str(error) if isinstance(error, RuntimeError) else type(error).__name__)
         write_json(run / 'RESULT.json', state)
-        alert('업무 런처를 새 버전용으로 교체했습니다. 런처를 열어 새 구간을 시작하세요.')
+        synced = state['pinSync'] in ('committed', 'already')
+        alert('업무 런처를 새 버전용으로 교체했습니다. ' + ('' if synced else '원본 폴더 고정값은 맞추지 못했습니다(RESULT.json pinSync). ')
+              + '런처를 열어 새 구간을 시작하세요.')
     except Exception as error:
         state['phase'] = 'blocked-install'
         state['errorType'] = type(error).__name__

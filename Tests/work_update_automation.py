@@ -2,7 +2,10 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -195,7 +198,7 @@ class UpdateTests(unittest.TestCase):
         def run_pipeline(base, run):
             return module.pipeline(base, run, self.inspector, lambda *_: True, probe=PASSING)
         state = module.automatic(self.base, self.run, 1000.0, now=lambda: 1000.0 + consent_age, pipeline_run=pipeline_run or run_pipeline,
-                                 installer=installer, sleep=sleeps.append, alert=alerts.append)
+                                 installer=installer, sleep=sleeps.append, alert=alerts.append, checkout=self.base)
         return state, alerts, sleeps, calls
 
     def test_automatic_response_installs_after_launcher_closes(self):
@@ -210,6 +213,37 @@ class UpdateTests(unittest.TestCase):
         self.assertIn('사람이 검토하지 않음', review['items']['release-evidence']['evidence'])
         self.assertIn('교체했습니다', alerts[-1])
         self.assertEqual(json.loads((self.run / 'RESULT.json').read_text())['phase'], 'installed')
+        self.assertTrue(state['pinSync'].startswith('skipped'))  # the fixture checkout is not a git repository
+        self.assertNotIn(state['reviewID'], (self.base / 'Sources/AppTrial.swift').read_text())
+
+    def test_sync_pins_commits_only_the_pin_block_as_head_author(self):
+        noreply = 'someone@users.noreply.github.com'
+        identity = dict(os.environ, GIT_AUTHOR_NAME='someone', GIT_AUTHOR_EMAIL=noreply, GIT_COMMITTER_NAME='someone', GIT_COMMITTER_EMAIL=noreply)
+        git = lambda *args, env=identity: subprocess.run(['/usr/bin/git', '-C', str(self.base)] + list(args), capture_output=True, text=True, check=True, env=env).stdout
+        git('init', '-q'); git('add', '-A'); git('commit', '-qm', 'base')
+        candidate = Path(self.temp.name) / 'candidate'
+        shutil.copytree(self.base / 'Sources', candidate / 'Sources')
+        review = 'work-update-' + 'a' * 32
+        module.stage_pins(candidate, self.observation, review)
+        trial = self.base / 'Sources/AppTrial.swift'
+        trial.write_text(trial.read_text() + '// local edit\n')
+        with self.assertRaisesRegex(RuntimeError, '커밋되지 않은'):
+            module.sync_pins(self.base, candidate, review)
+        self.assertNotIn(review, trial.read_text())  # refused before writing
+        git('checkout', '-q', '--', 'Sources/AppTrial.swift')
+        (self.base / 'Sources/WorkSetup.swift').write_text('unrelated local work\n')
+        self.assertEqual(module.sync_pins(self.base, candidate, review), 'committed')
+        self.assertEqual(module.pin_block(self.base), module.pin_block(candidate))
+        self.assertEqual(git('log', '-1', '--format=%ae|%ce|%ad', '--date=format:%z').strip(), noreply + '|' + noreply + '|+0000')
+        self.assertEqual(git('show', '--name-only', '--format=', 'HEAD').split(), ['Sources/AppTrial.swift'])
+        self.assertIn('WorkSetup.swift', git('status', '--porcelain'))  # other work is left alone
+        self.assertEqual(module.sync_pins(self.base, candidate, review), 'already')
+        moved = Path(self.temp.name) / 'moved'
+        shutil.copytree(candidate, moved)
+        module.stage_pins(moved, dict(self.observation, observed=dict(self.observation['observed'], app=dict(self.observation['observed']['app'], build='9999'))), 'work-update-' + 'b' * 32)
+        git('reset', '-q', '--hard', 'HEAD~1')
+        with self.assertRaisesRegex(RuntimeError, '이전 버전과 다름'):  # a candidate two edges ahead never overwrites the checkout
+            module.sync_pins(self.base, moved, 'work-update-' + 'b' * 32)
 
     def test_automatic_response_keeps_old_launcher_on_install_failure(self):
         def refused(*_): raise RuntimeError('미해결 업무 실행 존재')
