@@ -21,6 +21,8 @@ struct WorkProfileAdopter {
     let inUse: (String) -> Bool
     let now: () -> Date
     // Same-volume renames only: no copy, no deletion; inodes of codex/desktop/cwd are preserved.
+    // The old location becomes a link to the new root: the official app keeps absolute paths of
+    // earlier conversations (rollout files, working directories) and opens them through it.
     func adopt(from source: String, to root: String, legacy: String) throws -> WorkSetupAdoption {
         guard safeAbsolutePath(source), safeAbsolutePath(root), safeAbsolutePath(legacy),
               !overlap(source, root), !overlap(legacy, root), !overlap(legacy, source) else { throw Failure.profilePathConflict }
@@ -48,7 +50,7 @@ struct WorkProfileAdopter {
         if let legacyControl {
             guard renamex_np(root + "/control", legacyControl, UInt32(RENAME_EXCL)) == 0 else { throw Failure.io }
         }
-        guard mkdir(root + "/control", 0o700) == 0 else { throw Failure.io }
+        guard mkdir(root + "/control", 0o700) == 0, symlink(root, source) == 0 else { throw Failure.io }
         for directory in [parent, root, legacy, URL(fileURLWithPath: source).deletingLastPathComponent().path] {
             let fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
             guard fd >= 0 else { throw Failure.io }

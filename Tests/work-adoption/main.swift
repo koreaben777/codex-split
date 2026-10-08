@@ -50,7 +50,12 @@ try fm.createSymbolicLink(atPath: base + "/linked", withDestinationPath: source)
 rejected("a symlinked source is refused") { _ = try adopter.adopt(from: base + "/linked", to: profiles + "/other", legacy: legacy) }
 
 let adoption = try adopter.adopt(from: source, to: target, legacy: legacy)
-check(!fm.fileExists(atPath: source) && inode(target + "/codex") == codexInode, "moved by rename: same inode, no copy left behind")
+var linkInfo = stat()
+check(lstat(source, &linkInfo) == 0 && linkInfo.st_mode & S_IFMT == S_IFLNK && inode(target + "/codex") == codexInode,
+      "moved by rename: same inode, only a link left behind")
+check(try fm.destinationOfSymbolicLink(atPath: source) == target
+      && String(contentsOfFile: source + "/codex/session.jsonl", encoding: .utf8) == "thread",
+      "earlier absolute paths resolve through the link to the moved data")
 check(try String(contentsOfFile: target + "/codex/session.jsonl", encoding: .utf8) == "thread", "profile data intact")
 check(try fm.contentsOfDirectory(atPath: target + "/control").isEmpty, "the work root starts with empty control records")
 check(adoption.legacyControl.map { (try? String(contentsOfFile: $0 + "/state.json", encoding: .utf8)) == "{\"old\":true}" } == true,

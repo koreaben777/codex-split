@@ -55,7 +55,7 @@ sh scripts/check.sh
 python3 scripts/install-work-update-approved.py --install-new --retire-existing
 ```
 
-같은 디스크 안에서 이름만 바꿔 옮기며(복사·삭제 없음), 이전 `control` 기록은 `~/Library/Application Support/CodexSplit/legacy/`에 그대로 보존합니다. 이동 뒤 로그인 유지를 확인하는 방문 2회로 설정을 마치고, 이전 위치용 런처도 legacy 폴더로 옮긴 뒤 새 런처를 설치합니다. 공식 앱이 내부에 예전 절대 경로를 저장했다면 대화 목록이 달라질 수 있으니 첫 방문에서 확인하세요. 되돌릴 때는 업무 앱을 종료하고 이름 변경을 반대로 하면 됩니다(새 `control`은 따로 보관).
+같은 디스크 안에서 이름만 바꿔 옮기며(복사·삭제 없음), 이전 `control` 기록은 `~/Library/Application Support/CodexSplit/legacy/`에 그대로 보존합니다. 이동 뒤 로그인 유지를 확인하는 방문 2회로 설정을 마치고, 이전 위치용 런처도 legacy 폴더로 옮긴 뒤 새 런처를 설치합니다. 공식 앱은 이동 전 대화의 절대 경로를 저장하므로, 이전 위치에는 새 위치를 가리키는 링크를 남깁니다. 이 링크를 지우면 이동 전 대화가 열리지 않습니다(`failed to resolve rollout path`). 이전 위치가 공유·동기화되는 폴더 안이면 링크를 따라가지 않도록 주의하세요. 되돌릴 때는 업무 앱을 종료하고, 링크를 지운 뒤 이름 변경을 반대로 하면 됩니다(새 `control`은 따로 보관).
 
 런처 아이콘은 선택 사항입니다. `Assets/WorkIcon/CodexSplit-work.icns`를 두면 빌드에 포함되고, 업데이트 교체 시에도 같은 아이콘을 유지해야 합니다(저장소에는 포함하지 않습니다).
 

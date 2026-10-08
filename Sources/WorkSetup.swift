@@ -198,7 +198,7 @@ enum ProductionWorkSetup {
             store = try PrivateStore(root: plan.root + "/control")
             coordinator = WorkSetupCoordinator.production(store: store, now: Date.init)
             try coordinator.initialize(plan: plan, approvedAt: approvedAt, adoption: adoption)
-            print("이동 완료. 이전 기록: \(adoption.legacyControl ?? "없음")")
+            print("이동 완료. 이전 기록: \(adoption.legacyControl ?? "없음"). 이전 위치는 새 위치를 가리키는 링크로 남겼습니다(이동 전 대화용, 지우지 마세요).")
         } else if resume {
             lease = try AppTrialRootLease.resumeWork(plan)
             store = try PrivateStore(root: plan.root + "/control")
