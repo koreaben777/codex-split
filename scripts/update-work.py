@@ -333,7 +333,8 @@ INSTALLED_LAUNCHER = HOME / 'Applications/CodexSplit-work.app/Contents/MacOS/lau
 
 def deployed_source(base, runs, installed=INSTALLED_LAUNCHER):
     """Stage from the candidate that built the installed launcher, so each candidate's pin history
-    continues from the deployed one; otherwise the checkout itself. Installation re-checks continuity."""
+    continues from the deployed one, unless the checkout carries the same pins (synced after an update):
+    then the checkout itself, so its later changes ship. Installation re-checks continuity."""
     if not installed.is_file():
         return base
     launcher = digest(installed)
@@ -343,7 +344,14 @@ def deployed_source(base, runs, installed=INSTALLED_LAUNCHER):
         if result.is_file() and built.is_file() and json.loads(result.read_text()).get('phase') == 'installed' and digest(built) == launcher:
             matches.append(run / 'candidate')
     require(len(matches) <= 1, '설치 런처와 일치하는 후보가 여럿')
-    return matches[0] if matches else base
+    if not matches:
+        return base
+    return base if pin_block(base) == pin_block(matches[0]) else matches[0]
+
+
+def pin_block(root):
+    text, start, end, _, _ = read_pins(root / 'Sources/AppTrial.swift')
+    return text[start:end]
 
 
 def load_installer(base):

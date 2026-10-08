@@ -236,7 +236,13 @@ class UpdateTests(unittest.TestCase):
             launcher.mkdir(parents=True)
             (launcher / 'launcher').write_bytes(content)
             (runs / name / 'RESULT.json').write_text(json.dumps({'phase': phase}))
+            (runs / name / 'candidate/Sources').mkdir()
+            trial = (self.base / 'Sources/AppTrial.swift').read_text()
+            (runs / name / 'candidate/Sources/AppTrial.swift').write_text(trial.replace('static let updateReviewID: String? = nil', 'static let updateReviewID: String? = "work-update-' + '1' * 32 + '"'))
         self.assertEqual(module.deployed_source(self.base, runs, installed), runs / ('b' * 32) / 'candidate')
+        # Once the checkout carries the deployed pins, it is the source again.
+        (runs / ('b' * 32) / 'candidate/Sources/AppTrial.swift').write_text((self.base / 'Sources/AppTrial.swift').read_text())
+        self.assertEqual(module.deployed_source(self.base, runs, installed), self.base)
         installed.write_bytes(b'unknown')
         self.assertEqual(module.deployed_source(self.base, runs, installed), self.base)
 
