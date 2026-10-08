@@ -99,13 +99,15 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
         return false
     }
     // Acceptance visits only: daily use has no menu bar item and ends with Cmd-Q in the work app.
-    private func configureMenu() {
+    // A carry-over visit records the quit preparation together with a positive report.
+    private func configureMenu(carryOver: Bool) {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "업무 확인"
         let menu = NSMenu()
-        for (title, action) in [("상태 확인", #selector(showStatus)), ("앱 업데이트 확인", #selector(showUpdateStatus)), ("계정·개인 앱·프로젝트 확인", #selector(reportUI)),
-                                ("업무 앱 정상 종료 준비", #selector(prepareQuit)), ("런처 관측 종료", #selector(stopObserver))] {
+        let entries: [(String, Selector)] = [("상태 확인", #selector(showStatus)), ("앱 업데이트 확인", #selector(showUpdateStatus)), ("계정·개인 앱·프로젝트 확인", #selector(reportUI))]
+            + (carryOver ? [] : [("업무 앱 정상 종료 준비", #selector(prepareQuit))]) + [("런처 관측 종료", #selector(stopObserver))]
+        for (title, action) in entries {
             let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
             entry.target = self; menu.addItem(entry)
         }
@@ -166,14 +168,18 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
                 message("업무 실행 중이거나 이전 실행의 종료를 확인하지 못했습니다. 새 앱을 열지 않습니다. 기존 업무 창을 사용하고, 관측이 끊겼다면 기록을 보존한 채 확인을 요청하세요.")
                 NSApplication.shared.terminate(nil); return
             }
+            var openConsentedAt: Date?
             if context.updateRequired {
                 updatePending = true
-                guard try beginUpdate(context) else { NSApplication.shared.terminate(nil); return }
+                guard let opens = try beginUpdate(context) else { NSApplication.shared.terminate(nil); return }
+                openConsentedAt = opens
                 updatePending = false
                 state = try context.coordinator.read()
             }
-            if state.grant == nil && state.acceptedCount >= 2 {
-                let accepted = consent("이 도구에서 업무 앱 열기·계정/개인 앱/프로젝트 확인·정상 종료를 두 번 완료했습니다. 현재 고정 버전과 기존 업무 root에 한해 이후 더블클릭 실행을 허용할 수 있습니다. 앱 시작은 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있습니다. 완전한 인증 분리는 보장하지 않습니다. 버전·도구·root 변경 또는 미확인 실행은 차단합니다.", action: "이 버전의 일상 사용 허용")
+            let carryOver = state.update?.carryOver == true
+            if state.grant == nil && state.acceptedCount >= state.requiredAcceptances {
+                // Carry-over: consented when the segment started, so no separate grant dialog.
+                let accepted = carryOver || consent("이 도구에서 업무 앱 열기·계정/개인 앱/프로젝트 확인·정상 종료를 두 번 완료했습니다. 현재 고정 버전과 기존 업무 root에 한해 이후 더블클릭 실행을 허용할 수 있습니다. 앱 시작은 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있습니다. 완전한 인증 분리는 보장하지 않습니다. 버전·도구·root 변경 또는 미확인 실행은 차단합니다.", action: "이 버전의 일상 사용 허용")
                 guard accepted else { NSApplication.shared.terminate(nil); return }
                 try context.verify()
                 try context.coordinator.transaction {
@@ -186,11 +192,17 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             let scope: WorkDailyScope = state.grant == nil ? .acceptance : .normal
             let plan = AppInitialTrialPlan.workSetup(requestedAt: Date())
             guard WorkDailyState.sameTarget(context.plan, plan) else { throw Failure.identityMismatch }
-            if scope == .acceptance {
+            if scope == .acceptance && carryOver && openConsentedAt == nil {
+                guard consent("업데이트 뒤 확인 실행입니다. 업무 창을 열어 평소처럼 사용하다가 메뉴 막대 `업무 확인`에서 계정·개인 앱·프로젝트를 한 번 확인하고, 그 창을 Cmd-Q로 닫아 정상 종료가 관측되면 일상 사용 허용이 이어집니다. 확인 결과가 다르면 실행을 막고 기록을 보존합니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있으며, 완전한 인증 분리는 보장하지 않습니다.", action: "업무 창 열기") else {
+                    NSApplication.shared.terminate(nil); return
+                }
+            } else if scope == .acceptance && !carryOver {
                 let accepted = consent("기존 업무 로그인과 업무 프로젝트를 유지하여 업무 창 하나를 여는 수용 시험입니다. 로그인·모델 요청·이전 자료 복원·개인 앱 제어는 하지 않습니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있습니다. 완전한 인증 분리는 보장하지 않습니다. 계정·개인 상태·프로젝트를 확인한 뒤 메뉴의 종료 준비 안내를 따라 해당 업무 앱만 직접 종료하세요. 문제가 있으면 기록을 보존하고 자동 재실행하지 않습니다.", action: "업무 창 열기 1회")
                 guard accepted else { NSApplication.shared.terminate(nil); return }
-                configureMenu()
             }
+            if scope == .acceptance { configureMenu(carryOver: carryOver) }
+            // The merged consent stays bound to the click: the checks in between never extend it.
+            if let at = openConsentedAt, Date().timeIntervalSince(at) >= 120 { throw Failure.approvalStale }
             let consentAt = Date()
             let submitted = try context.coordinator.submit(plan: plan, scope: scope, accepted: true, consentAt: consentAt,
                 toolFingerprint: context.toolFingerprint, directories: context.directories, owner: owner,
@@ -277,7 +289,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             message("업데이트 자동 대응이 이미 진행 중입니다. 완료 알림을 받은 뒤 런처를 다시 여세요. 업무 기록은 그대로입니다.")
             return
         }
-        guard consent(update.summary + "\n\n자동 대응: 서명·pin 재확인, 업무 저장소 분리 표식 정적 점검, 격리 후보 빌드와 전체 시험(10분 안팎) 뒤 이 런처가 닫혀 있으면 백업을 남기고 런처를 교체합니다. 공식 변경 내역은 사람이 검토하지 않습니다. 교체 뒤 새 수용 시험 두 번과 일상 허용을 다시 받아야 하며, 그동안 업무 앱은 열지 않습니다. 실패하면 기존 런처와 기록을 그대로 둡니다.", action: "자동 대응 시작") else { return }
+        guard consent(update.summary + "\n\n자동 대응: 서명·pin 재확인, 업무 저장소 분리 표식 정적 점검, 격리 후보 빌드와 전체 시험(10분 안팎) 뒤 이 런처가 닫혀 있으면 백업을 남기고 런처를 교체합니다. 공식 변경 내역은 사람이 검토하지 않습니다. 교체 뒤 런처를 다시 열면 새 구간이 시작됩니다. 지금 일상 사용 허용이 있으면 첫 업무 창에서 확인 한 번으로 허용이 이어지고, 없으면 수용 시험 두 번과 일상 허용을 받습니다. 교체가 끝날 때까지 업무 앱은 열지 않습니다. 실패하면 기존 런처와 기록을 그대로 둡니다.", action: "자동 대응 시작") else { return }
         do {
             try WorkUpdateAutomation.start(consentedAt: Date())
             message("자동 대응을 시작했습니다. 완료나 중단은 알림으로 알려 드립니다. 이 런처는 닫힙니다.")
@@ -285,22 +297,30 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             message("자동 대응을 시작하지 못했습니다. 업무 기록과 런처는 그대로입니다.\n" + WorkUpdateGuide.blockedLaunch)
         }
     }
-    // A verified replacement receipt plus consent opens a fresh acceptance segment; it grants nothing.
-    private func beginUpdate(_ context: WorkDailyContext) throws -> Bool {
+    // A verified replacement receipt plus consent opens a fresh acceptance segment; it grants nothing by itself.
+    // nil: declined. Inner value: the click time when the predecessor held a grant and the consent also covers
+    // opening the first work window.
+    private func beginUpdate(_ context: WorkDailyContext) throws -> Date?? {
         let located = try WorkDailyReplacementEvidence.locateInstalled(launcherSHA256: context.toolFingerprint)
-        guard let segmentPlan = try context.coordinator.read().segment?.plan ?? context.store.read().workSetup?.plan else { throw Failure.approvalRequired }
+        let prior = try context.coordinator.read()
+        guard let segmentPlan = try prior.segment?.plan ?? context.store.read().workSetup?.plan else { throw Failure.approvalRequired }
+        let carry = prior.grant != nil
         let plan = AppInitialTrialPlan.workSetup(requestedAt: Date())
         let change = WorkDailyState.sameTarget(segmentPlan, plan)
             ? "업무 런처가 검증된 교체 절차로 바뀌었습니다. 공식 앱 \(plan.appVersion)/\(plan.appBuild)는 그대로입니다."
             : "공식 앱이 \(segmentPlan.appVersion)/\(segmentPlan.appBuild)에서 \(plan.appVersion)/\(plan.appBuild)로 바뀌었고, "
                 + (located.automatic ? "자동 대응(서명·pin·정적 분리 표식·전체 시험 통과, 사람의 변경 내역 검토 없음)으로" : "호환성 검토(\(located.reviewID ?? "-"))를 거친")
                 + " 런처가 설치됐습니다."
-        guard consent(change + " 이전 업무 기록은 변경 없이 보존하고 이 런처·버전은 성공 0회에서 다시 시작합니다. 업무 창 열기·계정/개인 앱/프로젝트 확인·정상 종료 수용 시험 두 번과 별도의 일상 사용 허용이 다시 필요합니다. 이전 성공이나 허용은 이어지지 않습니다. 이 동의만으로 앱을 열지는 않습니다.", action: "새 수용 구간 시작") else { return false }
+        let accepted = carry
+            ? consent(change + " 이전 업무 기록은 변경 없이 보존하고 새 구간을 시작합니다. 직전에 일상 사용 허용이 있었으므로, 이어서 여는 업무 창에서 메뉴 막대 `업무 확인`으로 계정·개인 앱·프로젝트를 한 번 확인하고 그 창을 Cmd-Q로 닫아 정상 종료가 관측되면 일상 사용 허용이 이어집니다. 확인 결과가 다르면 실행을 막고 기록을 보존합니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있으며, 완전한 인증 분리는 보장하지 않습니다.", action: "새 구간 시작·업무 창 열기")
+            : consent(change + " 이전 업무 기록은 변경 없이 보존하고 이 런처·버전은 성공 0회에서 다시 시작합니다. 업무 창 열기·계정/개인 앱/프로젝트 확인·정상 종료 수용 시험 두 번과 별도의 일상 사용 허용이 다시 필요합니다. 이전 성공이나 허용은 이어지지 않습니다. 이 동의만으로 앱을 열지는 않습니다.", action: "새 수용 구간 시작")
+        guard accepted else { return nil }
+        let clickedAt = Date()
         try context.verify()
-        _ = try context.coordinator.beginUpdate(plan: plan, accepted: true, consentAt: Date(), toolFingerprint: context.toolFingerprint,
+        let transition = try context.coordinator.beginUpdate(plan: plan, accepted: true, consentAt: Date(), toolFingerprint: context.toolFingerprint,
             directories: context.directories, reviewID: located.reviewID, replacement: located.evidence,
             replacedToolFingerprint: located.replacedLauncherSHA256, inspect: { try context.verify() })
-        return true
+        return .some(carry && transition.carryOver == true ? clickedAt : nil)
     }
     private func requireCurrent(_ context: WorkDailyContext, adapter: AppInitialTrialObjectAdapter<NSRunningApplication>,
                                 generation: WorkProcess, id: UUID, frontmost: Bool = false) throws {
@@ -367,7 +387,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             var segment = ""
             if let update = state.update {
                 segment = "\n현재 구간: " + (update.versionChanged ? "공식 앱 \(update.fromPlan.appVersion)/\(update.fromPlan.appBuild) → \(update.toPlan.appVersion)/\(update.toPlan.appBuild) 업데이트" : "업무 런처 교체")
-                    + " 이후 새 수용 \(state.acceptedCount)/2회, 일상 허용 " + (state.grant == nil ? "없음" : "있음") + ". 이전 구간 기록(과거 미확인 실패 기록이 있으면 그 상태 그대로)은 변경 없이 보존됐습니다."
+                    + " 이후 새 수용 \(state.acceptedCount)/\(state.requiredAcceptances)회, 일상 허용 " + (state.grant == nil ? "없음" : "있음") + ". 이전 구간 기록(과거 미확인 실패 기록이 있으면 그 상태 그대로)은 변경 없이 보존됐습니다."
             }
             message(current + segment)
         } catch { message("상태 기록을 확인할 수 없습니다. 새 실행을 보류하고 기존 기록을 보존하세요.") }
@@ -389,9 +409,16 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             try requireCurrent(context, adapter: adapter, generation: generation, id: attemptID)
-            try context.coordinator.transaction { try $0.report(attemptID, account: account, personal: personal, projectsConnected: projects, now: Date()) }
+            let carried = try context.coordinator.transaction { (state: inout WorkDailyState) -> Bool in
+                try state.report(attemptID, account: account, personal: personal, projectsConnected: projects, now: Date())
+                guard state.update?.carryOver == true, !state.attempts.contains(where: \.rejectedReport) else { return false }
+                try state.quitIntent(attemptID, owner: owner, bootSession: context.bootSession, now: Date())
+                return true
+            }
             if account != .confirmed || personal != .unchanged || !projects {
                 message("확인 결과가 수용 조건과 다릅니다. 추가 로그인·종료·재실행으로 고치지 말고 기록을 보존해 보고하세요.")
+            } else if carried {
+                message("확인을 저장했습니다. 업무를 마치면 이 업무 창에서 Cmd-Q 하세요. 정상 종료가 관측되면 다음 실행부터 일상 사용이 이어집니다. 닫기 전에 문제가 생기면 메뉴의 '런처 관측 종료'를 사용하세요. 이번 확인은 성공으로 세지 않습니다.")
             } else { message("현재 사용자 확인을 저장했습니다. 업무 창을 선택한 뒤 메뉴의 정상 종료 준비를 사용하세요.") }
         } catch { message("지정 업무 창의 귀속 또는 보고 저장을 확인하지 못했습니다. 그 업무 창을 먼저 선택하고 상태를 확인하세요.") }
     }

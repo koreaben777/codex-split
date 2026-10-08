@@ -70,7 +70,7 @@ enum WorkUpdateGuide {
     }()
     static var blockedLaunch: String {
         "업무 기록은 그대로 보존했고 업무 앱은 열지 않았습니다. CodexSplit 소스에서 업데이트 후보를 준비하세요: python3 "
-            + (sourceRoot.map { $0 + "/" } ?? "") + "scripts/update-work.py (문서: docs/UPDATES.md). 설치 뒤 이 런처를 다시 열면 성공 0회부터 새 수용 시험을 시작합니다."
+            + (sourceRoot.map { $0 + "/" } ?? "") + "scripts/update-work.py (문서: docs/UPDATES.md). 설치 뒤 이 런처를 다시 열면 새 구간을 시작합니다."
     }
 }
 
@@ -183,7 +183,7 @@ struct WorkUpdateReviewPlan: Encodable {
             ReviewItem(id: "identity", requirement: "report.observed의 앱·CLI·리소스 해시와 서명; 바뀌면 새 후보 필요"),
             ReviewItem(id: "storage-auth-ipc", requirement: "저장 구조·인증·IPC 변경과 업무/개인 프로필 영향"),
             ReviewItem(id: "preservation-recovery", requirement: "백업·영수증 보존과 전환 전 복원 방법"),
-            ReviewItem(id: "trial-consent", requirement: "교체 뒤 새 수용 시험 두 번과 별도 일상 허용을 진행한다는 동의")
+            ReviewItem(id: "trial-consent", requirement: "교체 뒤 새 구간 확인(직전 일상 허용이 있으면 확인 1회로 허용 재발급, 없으면 수용 시험 두 번과 별도 일상 허용)에 대한 동의")
         ]
     }
 }

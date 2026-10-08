@@ -137,9 +137,10 @@ struct WorkDailyGrant: Codable {
     let directories: [String: WorkDirectory]
     let plan: AppInitialTrialPlan
 }
-// Starts a new acceptance segment after a verified launcher replacement. Nothing is
-// inherited: the predecessor stays byte-for-byte in an immutable archive, and the new
-// launcher/version needs two new acceptance visits and a separate daily-use grant.
+// Starts a new acceptance segment after a verified launcher replacement. No visit is
+// inherited: the predecessor stays byte-for-byte in an immutable archive. A new launcher/
+// version needs two acceptance visits and a separate daily-use grant, unless the predecessor
+// held a grant (carryOver): then one accepted visit re-issues it, consented at segment start.
 struct WorkDailyUpdateTransition: Codable {
     let reviewID: String? // nil only when the official target is unchanged (launcher-only replacement)
     let setupPlan: AppInitialTrialPlan
@@ -152,6 +153,7 @@ struct WorkDailyUpdateTransition: Codable {
     let previousArchiveSHA256: String
     let replacement: WorkDailyReplacementEvidence?
     let approvedAt: Date
+    var carryOver: Bool? = nil // true only; re-verified against the archived predecessor on every read
     var versionChanged: Bool { !WorkDailyState.sameTarget(fromPlan, toPlan) }
     static func validReviewID(_ value: String) -> Bool {
         value.range(of: "^work-update-[0-9a-f]{32}$", options: .regularExpression) != nil
@@ -162,7 +164,7 @@ struct WorkDailyUpdateTransition: Codable {
               domain != .production || ([setupPlan, fromPlan, toPlan].allSatisfy(\.isRecordedWorkPlan) && replacement != nil),
               replacement?.valid() ?? true,
               (reviewID != nil) == versionChanged, reviewID.map(Self.validReviewID) ?? true,
-              versionChanged || fromToolFingerprint != toToolFingerprint,
+              versionChanged || fromToolFingerprint != toToolFingerprint, carryOver != false,
               [fromToolFingerprint, toToolFingerprint, previousArchiveSHA256].allSatisfy(WorkDailyState.validHash),
               WorkDailyState.validDirectories(directories),
               approvedAt.timeIntervalSince1970.isFinite, approvedAt >= toPlan.requestedAt, approvedAt <= now else { return false }
@@ -176,6 +178,7 @@ struct WorkDailyState: Codable {
     var grant: WorkDailyGrant?
     var pending: Bool { attempts.last.map { !$0.closed } ?? false }
     var acceptedCount: Int { attempts.filter(\.accepted).count }
+    var requiredAcceptances: Int { update?.carryOver == true ? 1 : 2 }
     // The official target and launcher this segment is bound to, even before its first visit.
     var segment: (plan: AppInitialTrialPlan, toolFingerprint: String, directories: [String: WorkDirectory])? {
         if let last = attempts.last { return (last.plan, last.toolFingerprint, last.directories) }
@@ -206,9 +209,9 @@ struct WorkDailyState: Codable {
                   current.plan.requestedAt >= ended, Self.sameTarget(previous.plan, current.plan) else { return false }
         }
         if let grant {
-            let accepted = Array(attempts.filter(\.accepted).suffix(2))
-            guard accepted.count == 2, grant.acceptedAttemptIDs == accepted.map(\.id),
-                  grant.approvedAt >= accepted[1].endedAt!, grant.approvedAt <= now,
+            let accepted = Array(attempts.filter(\.accepted).suffix(requiredAcceptances))
+            guard accepted.count == requiredAcceptances, grant.acceptedAttemptIDs == accepted.map(\.id),
+                  grant.approvedAt >= accepted.last!.endedAt!, grant.approvedAt <= now,
                   accepted.allSatisfy({ $0.toolFingerprint == grant.toolFingerprint && $0.directories == grant.directories && Self.sameTarget($0.plan, grant.plan) }),
                   Self.validHash(grant.toolFingerprint), Self.validDirectories(grant.directories) else { return false }
         }
@@ -326,10 +329,10 @@ struct WorkDailyState: Codable {
     }
     mutating func approveNormal(toolFingerprint: String, directories: [String: WorkDirectory], accepted: Bool, now: Date) throws {
         guard accepted, valid(now: now), !pending, grant == nil, !attempts.contains(where: \.rejectedReport) else { throw Failure.approvalRequired }
-        let acceptedAttempts = Array(attempts.filter(\.accepted).suffix(2))
-        guard acceptedAttempts.count == 2, acceptedAttempts.allSatisfy({ $0.toolFingerprint == toolFingerprint && $0.directories == directories }) else { throw Failure.approvalRequired }
+        let acceptedAttempts = Array(attempts.filter(\.accepted).suffix(requiredAcceptances))
+        guard acceptedAttempts.count == requiredAcceptances, acceptedAttempts.allSatisfy({ $0.toolFingerprint == toolFingerprint && $0.directories == directories }) else { throw Failure.approvalRequired }
         grant = WorkDailyGrant(acceptedAttemptIDs: acceptedAttempts.map(\.id), approvedAt: now,
-            toolFingerprint: toolFingerprint, directories: directories, plan: acceptedAttempts[1].plan)
+            toolFingerprint: toolFingerprint, directories: directories, plan: acceptedAttempts.last!.plan)
         guard valid(now: now) else { grant = nil; throw Failure.stateInvalid }
     }
     static func decode(_ data: Data, now: Date) throws -> Self {
@@ -426,6 +429,8 @@ struct WorkDailyCoordinator {
               dailyDataDigest(archive) == update.previousArchiveSHA256 else { throw Failure.stateInvalid }
         let prior = try WorkDailyState.decode(archive, now: now())
         try checkDomain(prior)
+        // One direction only: segments recorded before carry-over existed keep needing two visits.
+        guard update.carryOver != true || prior.grant != nil else { throw Failure.stateInvalid }
         guard let segment = prior.segment else {
             // An update before the first launcher visit continues from the completed setup itself.
             guard prior.schemaVersion == 1, prior.attempts.isEmpty, prior.grant == nil,
@@ -478,7 +483,8 @@ struct WorkDailyCoordinator {
             try inspect()
             let update = WorkDailyUpdateTransition(reviewID: reviewID, setupPlan: setup.plan, fromPlan: segment.plan, toPlan: plan,
                 fromToolFingerprint: segment.toolFingerprint, toToolFingerprint: toolFingerprint, directories: directories,
-                previousArchiveID: UUID(), previousArchiveSHA256: dailyDataDigest(data), replacement: replacement, approvedAt: now())
+                previousArchiveID: UUID(), previousArchiveSHA256: dailyDataDigest(data), replacement: replacement, approvedAt: now(),
+                carryOver: prior.grant != nil ? true : nil)
             var next = WorkDailyState(); next.schemaVersion = 2; next.update = update
             guard next.valid(now: now()) else { throw Failure.stateInvalid }
             try store.archiveWorkDailyLocked(data, id: update.previousArchiveID)

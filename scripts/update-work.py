@@ -245,12 +245,12 @@ def automatic_review(state, report, isolation, consented_at, to_manifest_sha):
         observed['cli']['build'], observed['cli']['fingerprint'], observed['resourcesSHA256'])
     markers = '; '.join(relative + ': ' + ', '.join(value['required']) for relative, value in sorted(isolation.items()))
     items = {
-        'baseline': '배치 직전 미해결 업무 실행·거부 보고·미해결 설정 없음을 다시 확인. 이전 성공·일상 허용은 승계하지 않음.',
+        'baseline': '배치 직전 미해결 업무 실행·거부 보고·미해결 설정 없음을 다시 확인. 이전 성공은 승계하지 않음. 직전 일상 허용이 있으면 새 구간 확인 1회 뒤 허용 재발급.',
         'release-evidence': '자동 대응: 공식 변경 내역은 사람이 검토하지 않음. 서명된 공식 설치본의 identity만 확인.',
         'identity': identity + ' (후보 시험 전후 동일). 후보 전체 검사(scripts/check.sh) 통과.',
-        'storage-auth-ipc': '정적 분리 표식 확인 - ' + markers + '. 실제 저장·인증 분리는 새 수용 시험 2회로 확인.',
+        'storage-auth-ipc': '정적 분리 표식 확인 - ' + markers + '. 실제 저장·인증 분리는 새 구간의 사용자 확인으로 확인.',
         'preservation-recovery': '기존 교체 절차의 백업·영수증 보존, 새 구간 전환 전 --restore-backup 수동 복원. 자동 롤백 없음.',
-        'trial-consent': '자동 대응 동의 {}. 새 수용 구간 시작·수용 방문·일상 허용은 각각 별도 GUI 동의.'.format(consented_at),
+        'trial-consent': '자동 대응 동의 {}. 새 구간 시작과 확인 방문은 별도 GUI 동의(직전 일상 허용이 있으면 한 번에).'.format(consented_at),
     }
     return {'schemaVersion': 1, 'mode': 'automatic', 'reviewID': state['reviewID'], 'candidateManifestSHA256': to_manifest_sha,
             'items': {name: {'result': 'automatic', 'evidence': text} for name, text in items.items()}}
@@ -307,8 +307,7 @@ def pipeline(base, run, inspector=inspect, checks=run_checks, probe=isolation_ma
                 state['remaining'] = [
                     '호환성 검토 기록 작성: 공식 변경 근거, 저장/인증/IPC 영향, 보존·복구 계획 (REVIEW.json)',
                     '설치 승인 후 scripts/install-work-update-approved.py로 백업·검증 교체',
-                    '새 런처에서 새 수용 구간 시작 동의 후 실제 계정/프로젝트/중복 클릭/종료 수용 2회',
-                    '수용 완료 뒤 별도 일상 사용 허용'
+                    '새 런처에서 새 구간 시작 동의 후 실제 계정/프로젝트 확인: 직전 일상 허용이 있으면 1회로 허용 재발급, 없으면 수용 2회와 별도 일상 사용 허용'
                 ]
         write_json(result_path, state)
         return state

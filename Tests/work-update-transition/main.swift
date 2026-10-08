@@ -69,6 +69,20 @@ func begin(_ fingerprint: String, tool: String, reviewID: String? = nil, consent
 }
 let review = "work-update-" + String(repeating: "0", count: 32)
 let dailyPath = fixture + "/work-daily.json"
+func rewriteDaily(_ change: (inout [String: Any]) -> Void) throws -> Data {
+    let original = try Data(contentsOf: URL(fileURLWithPath: dailyPath))
+    var update = try JSONSerialization.jsonObject(with: original) as! [String: Any]
+    var fields = update["update"] as! [String: Any]
+    change(&fields)
+    update["update"] = fields
+    try JSONSerialization.data(withJSONObject: update).write(to: URL(fileURLWithPath: dailyPath))
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dailyPath)
+    return original
+}
+func restoreDaily(_ original: Data) throws {
+    try original.write(to: URL(fileURLWithPath: dailyPath))
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dailyPath)
+}
 func archives() throws -> [String] { try fm.contentsOfDirectory(atPath: fixture).filter { $0.hasPrefix("work-daily-history-") }.sorted() }
 
 try visit("v1", tool: toolA); try visit("v1", tool: toolA)
@@ -102,6 +116,10 @@ check(state.schemaVersion == 2 && state.attempts.isEmpty && state.acceptedCount 
 check(first.reviewID == nil && !first.versionChanged && first.fromToolFingerprint == toolA && first.setupPlan == setupPlan, "런처만 교체된 전환 기록")
 check(try archives().count == 1 && Data(contentsOf: URL(fileURLWithPath: fixture + "/work-daily-history-" + first.previousArchiveID.uuidString + ".json")) == before,
       "이전 구간을 바이트 그대로 불변 보존")
+check(first.carryOver == nil && state.requiredAcceptances == 2, "일상 허용이 없던 구간 뒤에는 허용 승계 없음: 수용 2회")
+let unforged = try rewriteDaily { $0["carryOver"] = true }
+rejected("허용 없던 이전 구간에 승계 표시 위조 거부") { _ = try daily.read() }
+try restoreDaily(unforged)
 rejected("이전 런처로 새 구간 실행 불가") { try visit("v1", tool: toolA) }
 rejected("이전 성공으로 일상 허용 불가") {
     try daily.transaction { try $0.approveNormal(toolFingerprint: toolB, directories: roots, accepted: true, now: clock) }
@@ -118,7 +136,11 @@ check(try daily.read().grant != nil, "새 구간 수용 2회 뒤 별도 일상 �
 let second = try begin("v2", tool: toolC, reviewID: review)
 state = try daily.read()
 check(second.versionChanged && second.reviewID == review && second.setupPlan == setupPlan && state.grant == nil && state.acceptedCount == 0,
-      "버전 업데이트 구간: 검토 ID 기록, 허용 승계 없음")
+      "버전 업데이트 구간: 검토 ID 기록, 허용 자체는 넘어오지 않음")
+check(second.carryOver == true && state.requiredAcceptances == 1, "직전 구간에 일상 허용이 있으면 확인 1회로 허용 승계")
+rejected("승계 구간도 확인 전에는 일상 허용 불가") {
+    try daily.transaction { try $0.approveNormal(toolFingerprint: toolC, directories: roots, accepted: true, now: clock) }
+}
 rejected("이전 버전 target으로 실행 불가") { try visit("v1", tool: toolC) }
 rejected("일상 범위 실행 불가") {
     let plan = target("v2", tick())
@@ -127,6 +149,15 @@ rejected("일상 범위 실행 불가") {
 }
 try visit("v2", tool: toolC)
 check(try daily.read().acceptedCount == 1, "새 버전 수용 진행")
+var carried = try daily.read()
+try carried.approveNormal(toolFingerprint: toolC, directories: roots, accepted: true, now: tick())
+check(carried.grant?.acceptedAttemptIDs.count == 1 && carried.valid(now: clock), "승계 구간은 확인 1회 뒤 일상 허용")
+let legacySegment = try rewriteDaily { $0["carryOver"] = nil }
+check(try daily.read().requiredAcceptances == 2, "승계 표시가 없던 이전 형식 구간은 그대로 읽고 수용 2회 유지")
+try restoreDaily(legacySegment)
+_ = try rewriteDaily { $0["carryOver"] = false }
+rejected("승계 표시 false 형식 거부") { _ = try daily.read() }
+try restoreDaily(legacySegment)
 
 // Archive integrity is re-verified on every read.
 let archivePath = fixture + "/work-daily-history-" + second.previousArchiveID.uuidString + ".json"
@@ -167,7 +198,8 @@ func freshBegin(_ replaced: String?) throws -> WorkDailyUpdateTransition {
 }
 rejected("교체된 런처를 모르면 첫 방문 전 전환 불가") { _ = try freshBegin(nil) }
 let freshUpdate = try freshBegin(toolA)
-check(freshUpdate.fromPlan == setupPlan && freshUpdate.fromToolFingerprint == toolA && freshUpdate.versionChanged, "첫 방문 전 업데이트는 setup 대상에서 시작")
+check(freshUpdate.fromPlan == setupPlan && freshUpdate.fromToolFingerprint == toolA && freshUpdate.versionChanged && freshUpdate.carryOver == nil,
+      "첫 방문 전 업데이트는 setup 대상에서 시작, 허용 승계 없음")
 check(try fresh.read().acceptedCount == 0 && fresh.read().schemaVersion == 2, "첫 방문 전 전환 뒤 성공 0회")
 let freshArchive = try Data(contentsOf: URL(fileURLWithPath: freshFixture + "/work-daily-history-" + freshUpdate.previousArchiveID.uuidString + ".json"))
 check(try WorkDailyState.decode(freshArchive, now: clock).attempts.isEmpty, "빈 이전 구간도 불변 보존")
