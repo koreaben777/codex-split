@@ -182,6 +182,7 @@ class InstallTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '아이콘'): self.deploy()
         (self.bundle / 'Contents/Resources').mkdir()
         (self.bundle / 'Contents/Resources/CodexSplit-work.icns').write_bytes(b'icns-local')
+        (self.bundle / 'Contents/Resources/CodexSplit-work.icns').chmod(0o600)  # automatic builds run under umask 077
         self.new = m.replacement.manifest(self.bundle); self.to_sha = m.replacement.manifest_digest(self.new)
         self.review()
         self.assertEqual(self.deploy()['phase'], 'installed')

@@ -170,7 +170,8 @@ def deploy(source_root, review_path, from_sha, to_sha, install, destination=DEST
     old, new = replacement.manifest(destination), replacement.manifest(bundle)
     require(replacement.manifest_digest(old) == from_sha and replacement.manifest_digest(new) == to_sha, '승인 전체 manifest 변경')
     require(old['Contents/MacOS/launcher'][0] != new['Contents/MacOS/launcher'][0], '같은 런처는 교체 대상 아님')
-    require(ICON not in old or old[ICON] == new.get(ICON), '설치본의 아이콘이 후보에 없거나 다름: Assets/WorkIcon 확인')
+    # Content only: the automatic pipeline builds under umask 077, so the same icon may differ in mode.
+    require(ICON not in old or old[ICON][0] == new.get(ICON, [None])[0], '설치본의 아이콘이 후보에 없거나 다름: Assets/WorkIcon 확인')
     # Before taking the lock: a running launcher's observation must never meet a busy lock.
     check_idle()
     _, daily, saved = control_baseline(control)
