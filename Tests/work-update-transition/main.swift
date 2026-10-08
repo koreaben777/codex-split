@@ -129,6 +129,7 @@ rejected("새 구간 1회 성공으로 일상 허용 불가") {
     try daily.transaction { try $0.approveNormal(toolFingerprint: toolB, directories: roots, accepted: true, now: clock) }
 }
 try visit("v1", tool: toolB)
+check(try !daily.read().carriesGrant, "승계 표시 없는 구간은 수용 2회만으로는 허용을 넘기지 않음(별도 허용 동의 필요)")
 try daily.transaction { try $0.approveNormal(toolFingerprint: toolB, directories: roots, accepted: true, now: tick()) }
 check(try daily.read().grant != nil, "새 구간 수용 2회 뒤 별도 일상 허용")
 
@@ -152,6 +153,18 @@ check(try daily.read().acceptedCount == 1, "새 버전 수용 진행")
 var carried = try daily.read()
 try carried.approveNormal(toolFingerprint: toolC, directories: roots, accepted: true, now: tick())
 check(carried.grant?.acceptedAttemptIDs.count == 1 && carried.valid(now: clock), "승계 구간은 확인 1회 뒤 일상 허용")
+// An update after the confirmed visit but before the next launch (which issues the grant) still carries over.
+let earnedDir = fixture + "/earned"
+try fm.createDirectory(atPath: earnedDir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+for name in try fm.contentsOfDirectory(atPath: fixture) where name.hasSuffix(".json") {
+    try fm.copyItem(atPath: fixture + "/" + name, toPath: earnedDir + "/" + name)
+}
+let earnedDaily = WorkDailyCoordinator.synthetic(store: try PrivateStore(root: earnedDir), now: { clock })
+check(try earnedDaily.read().carriesGrant && earnedDaily.read().grant == nil, "확인을 마치고 아직 열지 않은 승계 구간은 허용을 넘길 수 있음")
+let earnedPlan = target("v2", tick())
+let relaunch = try earnedDaily.beginUpdate(plan: earnedPlan, accepted: true, consentAt: earnedPlan.requestedAt, toolFingerprint: toolA,
+                                           directories: roots, reviewID: nil, replacement: nil, inspect: {})
+check(try relaunch.carryOver == true && earnedDaily.read().requiredAcceptances == 1, "그 사이 교체돼도 새 구간은 확인 1회")
 let legacySegment = try rewriteDaily { $0["carryOver"] = nil }
 check(try daily.read().requiredAcceptances == 2, "승계 표시가 없던 이전 형식 구간은 그대로 읽고 수용 2회 유지")
 try restoreDaily(legacySegment)

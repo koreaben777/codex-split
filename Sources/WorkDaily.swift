@@ -179,6 +179,9 @@ struct WorkDailyState: Codable {
     var pending: Bool { attempts.last.map { !$0.closed } ?? false }
     var acceptedCount: Int { attempts.filter(\.accepted).count }
     var requiredAcceptances: Int { update?.carryOver == true ? 1 : 2 }
+    // Daily use the next segment may carry over: issued, or earned in a carry-over segment where
+    // issuing needs no further consent (the confirmed visit ended before the next launch).
+    var carriesGrant: Bool { grant != nil || (update?.carryOver == true && acceptedCount >= requiredAcceptances) }
     // The official target and launcher this segment is bound to, even before its first visit.
     var segment: (plan: AppInitialTrialPlan, toolFingerprint: String, directories: [String: WorkDirectory])? {
         if let last = attempts.last { return (last.plan, last.toolFingerprint, last.directories) }
@@ -430,7 +433,7 @@ struct WorkDailyCoordinator {
         let prior = try WorkDailyState.decode(archive, now: now())
         try checkDomain(prior)
         // One direction only: segments recorded before carry-over existed keep needing two visits.
-        guard update.carryOver != true || prior.grant != nil else { throw Failure.stateInvalid }
+        guard update.carryOver != true || prior.carriesGrant else { throw Failure.stateInvalid }
         guard let segment = prior.segment else {
             // An update before the first launcher visit continues from the completed setup itself.
             guard prior.schemaVersion == 1, prior.attempts.isEmpty, prior.grant == nil,
@@ -484,7 +487,7 @@ struct WorkDailyCoordinator {
             let update = WorkDailyUpdateTransition(reviewID: reviewID, setupPlan: setup.plan, fromPlan: segment.plan, toPlan: plan,
                 fromToolFingerprint: segment.toolFingerprint, toToolFingerprint: toolFingerprint, directories: directories,
                 previousArchiveID: UUID(), previousArchiveSHA256: dailyDataDigest(data), replacement: replacement, approvedAt: now(),
-                carryOver: prior.grant != nil ? true : nil)
+                carryOver: prior.carriesGrant ? true : nil)
             var next = WorkDailyState(); next.schemaVersion = 2; next.update = update
             guard next.valid(now: now()) else { throw Failure.stateInvalid }
             try store.archiveWorkDailyLocked(data, id: update.previousArchiveID)

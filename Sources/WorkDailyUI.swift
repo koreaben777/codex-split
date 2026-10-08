@@ -304,7 +304,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
         let located = try WorkDailyReplacementEvidence.locateInstalled(launcherSHA256: context.toolFingerprint)
         let prior = try context.coordinator.read()
         guard let segmentPlan = try prior.segment?.plan ?? context.store.read().workSetup?.plan else { throw Failure.approvalRequired }
-        let carry = prior.grant != nil
+        let carry = prior.carriesGrant
         let plan = AppInitialTrialPlan.workSetup(requestedAt: Date())
         let change = WorkDailyState.sameTarget(segmentPlan, plan)
             ? "업무 런처가 검증된 교체 절차로 바뀌었습니다. 공식 앱 \(plan.appVersion)/\(plan.appBuild)는 그대로입니다."
@@ -312,7 +312,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
                 + (located.automatic ? "자동 대응(서명·pin·정적 분리 표식·전체 시험 통과, 사람의 변경 내역 검토 없음)으로" : "호환성 검토(\(located.reviewID ?? "-"))를 거친")
                 + " 런처가 설치됐습니다."
         let accepted = carry
-            ? consent(change + " 이전 업무 기록은 변경 없이 보존하고 새 구간을 시작합니다. 직전에 일상 사용 허용이 있었으므로, 이어서 여는 업무 창에서 메뉴 막대 `업무 확인`으로 계정·개인 앱·프로젝트를 한 번 확인하고 그 창을 Cmd-Q로 닫아 정상 종료가 관측되면 일상 사용 허용이 이어집니다. 확인 결과가 다르면 실행을 막고 기록을 보존합니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있으며, 완전한 인증 분리는 보장하지 않습니다.", action: "새 구간 시작·업무 창 열기")
+            ? consent(change + " 이전 업무 기록은 변경 없이 보존하고 새 구간을 시작합니다. 직전 구간에서 일상 사용이 허용됐거나 그 확인을 마쳤으므로, 이어서 여는 업무 창에서 메뉴 막대 `업무 확인`으로 계정·개인 앱·프로젝트를 한 번 확인하고 그 창을 Cmd-Q로 닫아 정상 종료가 관측되면 일상 사용 허용이 이어집니다. 확인 결과가 다르면 실행을 막고 기록을 보존합니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있으며, 완전한 인증 분리는 보장하지 않습니다.", action: "새 구간 시작·업무 창 열기")
             : consent(change + " 이전 업무 기록은 변경 없이 보존하고 이 런처·버전은 성공 0회에서 다시 시작합니다. 업무 창 열기·계정/개인 앱/프로젝트 확인·정상 종료 수용 시험 두 번과 별도의 일상 사용 허용이 다시 필요합니다. 이전 성공이나 허용은 이어지지 않습니다. 이 동의만으로 앱을 열지는 않습니다.", action: "새 수용 구간 시작")
         guard accepted else { return nil }
         let clickedAt = Date()
