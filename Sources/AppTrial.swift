@@ -53,11 +53,12 @@ struct WorkAppPins: Equatable {
     let cliFingerprint: String
     let resourcesSHA256: String
     // BEGIN update-work managed pins
-    static let current: Self = Self(appVersion: "26.1002.52244", appBuild: "13536", appFingerprint: "563768bd5c2525125858f888ffdddf5d02025e455256e67405c995c95b249c76", cliVersion: "0.162.0-alpha.2", cliBuild: "1", cliFingerprint: "cb4e4994627e770800a940b42969c77855a3fc09a6e60b02aa6319f670d6b6ab", resourcesSHA256: "40efd7acdf03a24817fcd7f35684fc2173b154df06774243cb4ab227e36fa915")
+    static let current: Self = Self(appVersion: "26.1007.21159", appBuild: "20052", appFingerprint: "78ea6475fc65222a54d627d637d25e372c755011b8997eb269de7a6c2f2fe544", cliVersion: "0.162.0-alpha.17.2", cliBuild: "1", cliFingerprint: "0d5ac7aae20c4eda6242428d5e218c55ba96d8763fda2a271088ff37104b9d28", resourcesSHA256: "97b8e5fddfced82d782c5f3f3e7c5aba7940b8cb1068dd214ffa3d71687d9fdb")
     static let history: [Self] = [
+        Self(appVersion: "26.1002.52244", appBuild: "13536", appFingerprint: "563768bd5c2525125858f888ffdddf5d02025e455256e67405c995c95b249c76", cliVersion: "0.162.0-alpha.2", cliBuild: "1", cliFingerprint: "cb4e4994627e770800a940b42969c77855a3fc09a6e60b02aa6319f670d6b6ab", resourcesSHA256: "40efd7acdf03a24817fcd7f35684fc2173b154df06774243cb4ab227e36fa915"),
         Self(appVersion: "26.930.61225", appBuild: "13232", appFingerprint: "68e7fa91d6feb7ed8ac86c55fdaf043ef137557ccca9a104cf1ff9fa7ef6af25", cliVersion: "0.160.1", cliBuild: "1", cliFingerprint: "cc0a05e34876414280a79726153d0fe8d55c93f704ef6c292ec409bfe36d5b06", resourcesSHA256: "88b8cce6f627771bf341f5a6bb464ad220749b0d442d44f618d7741c2de7318b"),
     ]
-    static let updateReviewID: String? = "work-update-223de4a18a1349a48f7d6b4ca4fac99f"
+    static let updateReviewID: String? = "work-update-2f3e4c8e0b434289b68f22bce80aeb2c"
     // END update-work managed pins
     // A reviewed version edge always starts at the newest historical target.
     static var updateEdgeSource: Self? { updateReviewID == nil ? nil : history.first }
