@@ -22,6 +22,7 @@ do {
         profiles | doctor | status <personal|work> [--json]
         cli <profile> --cwd <absolute-path> | app <profile> [--json]
         update-check work [--json] | update-plan work --json (read-only; 0 pinned, 2 review/unverified)
+        update-directory-check work --json (read-only; folder continuity, never grants consent)
         login <profile> | verify-auth <profile>
         verify <profile> --target <cli|app> --stage <basic|extended|day> --cwd <absolute-path>
         approve <profile> --target <cli|app> --stage <basic|extended|day> --cwd <absolute-path>
@@ -46,6 +47,22 @@ do {
         else if command.json { try emit(report) }
         else { print(report.text) }
         exit(report.exitCode)
+    case "update-directory-check":
+        do {
+            let path = CodexSplitPaths.workRoot + "/control/work-daily.json"
+            var info = stat()
+            let daily: WorkDailyState
+            if lstat(path, &info) != 0 && errno == ENOENT { daily = WorkDailyState() }
+            else { daily = try WorkDailyState.decode(dailyReplacementReceiptData(path), now: Date()) }
+            let directories = try WorkDirectory.snapshot(CodexSplitPaths.workRoot)
+            let status = daily.directoryStatus(directories, bootSession: try WorkProcess.bootSession())
+            struct Report: Encodable { let status: String; let directories: [String: WorkDirectory] }
+            try emit(Report(status: status, directories: directories))
+            exit(status == "blocked" ? 2 : 0)
+        } catch {
+            try emit(["status": "blocked"])
+            exit(2)
+        }
     case "doctor":
         try emit(inspectEnvironment())
     case "verify":

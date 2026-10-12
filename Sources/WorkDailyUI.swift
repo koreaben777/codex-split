@@ -27,20 +27,13 @@ private final class WorkDailyContext {
               let hash = fileDigest(executable.path) else { throw Failure.identityMismatch }
         return (executable.path, hash)
     }
-    private static func currentBoot() throws -> String {
-        var bytes = [CChar](repeating: 0, count: 128)
-        guard cs_boot_session(&bytes, 128) == 0 else { throw Failure.processUnknown }
-        let boot = String(cString: bytes)
-        guard UUID(uuidString: boot) != nil else { throw Failure.processUnknown }
-        return boot
-    }
     // Records only, no official app check: a visit that provably ended can be closed even while the
     // official app awaits an update (the installer never replaces a launcher over an unresolved visit).
     static func records() throws -> (coordinator: WorkDailyCoordinator, bootSession: String) {
         _ = try launcher()
         let plan = AppInitialTrialPlan.workSetup(requestedAt: Date())
         try AppTrialRootLease.resumeWork(plan).validate(requireEmpty: false)
-        return (.production(store: try PrivateStore(root: plan.root + "/control")), try currentBoot())
+        return (.production(store: try PrivateStore(root: plan.root + "/control")), try WorkProcess.bootSession())
     }
     init() throws {
         let (path, hash) = try Self.launcher()
@@ -60,7 +53,7 @@ private final class WorkDailyContext {
             updateRequired = false
             try WorkDailyCoordinator.prerequisites(store.read(), plan: plan, daily: daily)
         }
-        bootSession = try Self.currentBoot()
+        bootSession = try WorkProcess.bootSession()
         try verify()
     }
     func verify() throws {
@@ -305,12 +298,19 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
         let prior = try context.coordinator.read()
         guard let segmentPlan = try prior.segment?.plan ?? context.store.read().workSetup?.plan else { throw Failure.approvalRequired }
         let carry = prior.carriesGrant
+        let rebind = prior.segment.map { $0.directories != context.directories } ?? false
+        if rebind {
+            guard prior.canRebindDirectories(to: context.directories, bootSession: context.bootSession) else { throw Failure.profilePathConflict }
+        }
         let plan = AppInitialTrialPlan.workSetup(requestedAt: Date())
-        let change = WorkDailyState.sameTarget(segmentPlan, plan)
+        var change = WorkDailyState.sameTarget(segmentPlan, plan)
             ? "업무 런처가 검증된 교체 절차로 바뀌었습니다. 공식 앱 \(plan.appVersion)/\(plan.appBuild)는 그대로입니다."
             : "공식 앱이 \(segmentPlan.appVersion)/\(segmentPlan.appBuild)에서 \(plan.appVersion)/\(plan.appBuild)로 바뀌었고, "
                 + (located.automatic ? "자동 대응(서명·pin·정적 분리 표식·전체 시험 통과, 사람의 변경 내역 검토 없음)으로" : "호환성 검토(\(located.reviewID ?? "-"))를 거친")
                 + " 런처가 설치됐습니다."
+        if rebind {
+            change += "\n\n기존 폴더 기록에는 영구 볼륨 ID가 없어 현재 볼륨이 이전과 같은지 자동으로 증명할 수 없습니다. 경로·소유자·권한과 폴더 5곳의 inode를 확인했습니다. 아래 경로가 계속 사용하던 업무 저장소인지 확인하고 동의해 주세요. 동의하면 이전 기록을 그대로 보존하고 현재 볼륨 UUID로 다시 연결합니다. 이후 재부팅으로 장치 번호가 바뀌어도 같은 볼륨·폴더를 인식합니다.\n" + context.plan.root + "\n"
+        }
         let accepted = carry
             ? consent(change + " 이전 업무 기록은 변경 없이 보존하고 새 구간을 시작합니다. 직전 구간에서 일상 사용이 허용됐거나 그 확인을 마쳤으므로, 이어서 여는 업무 창에서 메뉴 막대 `업무 확인`으로 계정·개인 앱·프로젝트를 한 번 확인하고 그 창을 Cmd-Q로 닫아 정상 종료가 관측되면 일상 사용 허용이 이어집니다. 확인 결과가 다르면 실행을 막고 기록을 보존합니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있으며, 완전한 인증 분리는 보장하지 않습니다.", action: "새 구간 시작·업무 창 열기")
             : consent(change + " 이전 업무 기록은 변경 없이 보존하고 이 런처·버전은 성공 0회에서 다시 시작합니다. 업무 창 열기·계정/개인 앱/프로젝트 확인·정상 종료 수용 시험 두 번과 별도의 일상 사용 허용이 다시 필요합니다. 이전 성공이나 허용은 이어지지 않습니다. 이 동의만으로 앱을 열지는 않습니다.", action: "새 수용 구간 시작")
@@ -319,7 +319,8 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
         try context.verify()
         let transition = try context.coordinator.beginUpdate(plan: plan, accepted: true, consentAt: Date(), toolFingerprint: context.toolFingerprint,
             directories: context.directories, reviewID: located.reviewID, replacement: located.evidence,
-            replacedToolFingerprint: located.replacedLauncherSHA256, inspect: { try context.verify() })
+            replacedToolFingerprint: located.replacedLauncherSHA256,
+            directoryRebindAccepted: rebind, bootSession: context.bootSession, inspect: { try context.verify() })
         return .some(carry && transition.carryOver == true ? clickedAt : nil)
     }
     private func requireCurrent(_ context: WorkDailyContext, adapter: AppInitialTrialObjectAdapter<NSRunningApplication>,

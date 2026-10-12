@@ -93,6 +93,50 @@ _ = try daily.transaction { $0.attempts.removeLast() } // fixture only: drop the
 check(try daily.read().attempts.allSatisfy { $0.id != pendingID }, "fixture 정리")
 
 let before = try Data(contentsOf: URL(fileURLWithPath: dailyPath))
+let newBoot = UUID().uuidString
+let anchoredRoots = roots.mapValues { WorkDirectory(device: 2, inode: $0.inode, volumeUUID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!) }
+// Exercise the real transition on a copy, preserving the original archive bytes.
+let reanchorDir = fixture + "/reanchor"
+try fm.createDirectory(atPath: reanchorDir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+for name in ["state.json", "work-daily.json"] { try fm.copyItem(atPath: fixture + "/" + name, toPath: reanchorDir + "/" + name) }
+let reanchor = WorkDailyCoordinator.synthetic(store: try PrivateStore(root: reanchorDir), now: { clock })
+func anchor(_ roots: [String: WorkDirectory] = anchoredRoots, accepted: Bool = true, bootSession: String = newBoot) throws -> WorkDailyUpdateTransition {
+    let plan = target("v1", clock)
+    return try reanchor.beginUpdate(plan: plan, accepted: true, consentAt: clock, toolFingerprint: toolB,
+        directories: roots, reviewID: nil, replacement: nil, directoryRebindAccepted: accepted, bootSession: bootSession, inspect: {})
+}
+rejected("기존 기록 재연결은 명시적 동의 필요") { _ = try anchor(accepted: false) }
+rejected("같은 부팅 중 장치 번호 변경은 재연결 불가") { _ = try anchor(bootSession: boot) }
+var replacedAnchor = anchoredRoots; replacedAnchor["desktop"] = WorkDirectory(device: 2, inode: 999, volumeUUID: anchoredRoots["desktop"]!.volumeUUID)
+rejected("inode가 바뀐 폴더는 동의해도 재연결 불가") { _ = try anchor(replacedAnchor) }
+check(try Data(contentsOf: URL(fileURLWithPath: reanchorDir + "/work-daily.json")) == before, "재연결 거부 시 원본 기록 유지")
+let anchored = try anchor()
+check(try reanchor.read().update?.previousDirectories == roots, "재연결 후 이전 식별자 보존")
+check(try Data(contentsOf: URL(fileURLWithPath: reanchorDir + "/work-daily-history-" + anchored.previousArchiveID.uuidString + ".json")) == before, "재연결 시 이전 기록 바이트 보존")
+var anchoredState = try reanchor.read()
+let remountedRoots = anchoredRoots.mapValues { WorkDirectory(device: 3, inode: $0.inode, volumeUUID: $0.volumeUUID) }
+let remountedPlan = target("v1", clock)
+check(anchoredState.directoryStatus(remountedRoots, bootSession: newBoot) == "unchanged", "설치 사전 검사는 UUID가 같으면 재마운트 허용")
+let otherVolume = remountedRoots.mapValues { WorkDirectory(device: $0.device, inode: $0.inode, volumeUUID: UUID()) }
+check(anchoredState.directoryStatus(otherVolume, bootSession: newBoot) == "blocked", "설치 사전 검사는 다른 볼륨 차단")
+check(try daily.read().directoryStatus(anchoredRoots, bootSession: newBoot) == "confirmation-required", "설치 사전 검사는 기존 기록 재연결 동의를 요구")
+_ = try anchoredState.reserve(plan: remountedPlan, scope: .acceptance, consentAccepted: true, toolFingerprint: toolB,
+    directories: remountedRoots, owner: owner, bootSession: UUID().uuidString, now: clock)
+check(try WorkDailyState.decode(JSONEncoder().encode(anchoredState), now: clock).pending, "UUID 기록은 다음 재부팅 뒤에도 예약·저장 가능")
+var nullVolume = try JSONSerialization.jsonObject(with: JSONEncoder().encode(anchoredState)) as! [String: Any]
+var nullAttempts = nullVolume["attempts"] as! [[String: Any]]
+var nullDirectories = nullAttempts[0]["directories"] as! [String: [String: Any]]
+nullDirectories["desktop"]!["volumeUUID"] = NSNull()
+nullAttempts[0]["directories"] = nullDirectories; nullVolume["attempts"] = nullAttempts
+rejected("UUID null로 기존 형식으로 낮추는 기록 거부") { _ = try WorkDailyState.decode(JSONSerialization.data(withJSONObject: nullVolume), now: clock) }
+let reanchorPath = reanchorDir + "/work-daily.json"
+let reanchorBytes = try Data(contentsOf: URL(fileURLWithPath: reanchorPath))
+var forgedReanchor = try JSONSerialization.jsonObject(with: reanchorBytes) as! [String: Any]
+var forgedUpdate = forgedReanchor["update"] as! [String: Any]
+forgedUpdate["directoryRebindBootSession"] = boot; forgedReanchor["update"] = forgedUpdate
+try JSONSerialization.data(withJSONObject: forgedReanchor).write(to: URL(fileURLWithPath: reanchorPath))
+rejected("보존본의 부팅 세션과 같은 재연결 증거 위조 거부") { _ = try reanchor.read() }
+try reanchorBytes.write(to: URL(fileURLWithPath: reanchorPath))
 rejected("동의 취소 시 전환 없음") { _ = try begin("v1", tool: toolB, consent: false) }
 rejected("120초 지난 동의 거부") { _ = try begin("v1", tool: toolB, consentAge: 121) }
 rejected("같은 런처·같은 버전은 전환 대상 아님") { _ = try begin("v1", tool: toolA) }

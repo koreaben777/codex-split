@@ -83,6 +83,16 @@ def official_pinned(root):
     require(result.returncode == 0 and report.get('status') == 'pinned', '공식 앱이 후보 pin과 일치하지 않거나 서명 미확인')
 
 
+def directory_check(root):
+    # Use the candidate's own Swift comparison, including legacy consent eligibility.
+    result = subprocess.run([str(root / '.build/codex-split'), 'update-directory-check', 'work', '--json'],
+                            capture_output=True, timeout=30, check=False)
+    report = json.loads(result.stdout, object_pairs_hook=unique_object) if result.stdout else {}
+    require(result.returncode == 0 and report.get('status') in ('unchanged', 'confirmation-required')
+            and isinstance(report.get('directories'), dict), '업무 폴더 동일성 확인 실패: 교체하지 않음')
+    return report
+
+
 def launcher_running(listing):
     # Executable paths only (ps comm): a command that merely mentions the path, like shasum, is not a launcher.
     return any(re.fullmatch(r'.*/CodexSplit-work[^/]*\.app/Contents/MacOS/launcher', line.strip()) for line in listing.splitlines())
@@ -168,7 +178,7 @@ def bind(workspace, review_id, mode, launcher_sha, to_manifest_sha, review_bytes
 
 
 def deploy(source_root, review_path, from_sha, to_sha, install, destination=DESTINATION, control=CONTROL,
-           verify_signature=replacement.signed, check_idle=launcher_idle, official=official_pinned, base=BASE):
+           verify_signature=replacement.signed, check_idle=launcher_idle, official=official_pinned, base=BASE, directories=directory_check):
     info = candidate(source_root, base)
     bundle = info['root'] / '.build/CodexSplit-work-standalone.app'
     review_bytes, mode = review(review_path, info['reviewID'], to_sha)
@@ -186,12 +196,15 @@ def deploy(source_root, review_path, from_sha, to_sha, install, destination=DEST
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         baseline, daily, saved = control_baseline(control)
         continuity(info, daily, saved, old['Contents/MacOS/launcher'][0])
+        directory_baseline = directories(info['root'])
+        require(directory_baseline.get('status') in ('unchanged', 'confirmation-required'), '업무 폴더 동일성 확인 실패')
         def preflight():
             require(control_baseline(control)[0] == baseline, '제어 기록 변경')
             official(info['root'])
+            require(directories(info['root']) == directory_baseline, '업무 폴더 검사 중 변경')
         check_idle(); preflight(); verify_signature(destination); verify_signature(bundle)
         if not install:
-            return {'phase': 'preflight', 'reviewID': info['reviewID']}
+            return {'phase': 'preflight', 'reviewID': info['reviewID'], 'directoryStatus': directory_baseline['status']}
         record = replacement.replace(bundle, destination, old, new, from_sha, to_sha, verify_signature, check_idle, preflight)
         workspace = Path(record['backup']).parent
         bind(workspace, info['reviewID'], mode, new['Contents/MacOS/launcher'][0], to_sha, review_bytes)

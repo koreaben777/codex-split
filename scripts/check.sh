@@ -12,6 +12,7 @@ swift_check() { # name, test entry, extra sources...
     xcrun swiftc -module-cache-path "$PWD/.build/module-cache" -import-objc-header Sources/Native.h .build/Native.o $SWIFT_LIBRARY "$@" "$entry" -o ".build/$name"
 }
 python3 Tests/harness_ownership_test.py
+python3 Tests/install_work.py
 xcrun clang -Wall -Wextra -Werror -c Sources/Native.c -o .build/Native.o
 xcrun clang -Wall -Wextra -Werror Tests/NativeObserver.c .build/Native.o -o .build/native-observer-check
 .build/native-observer-check "$PWD/.test-data/native-observer-$$.marker"

@@ -17,6 +17,14 @@ let boot = UUID().uuidString
 let roots = Dictionary(uniqueKeysWithValues: ["", "codex", "desktop", "cwd", "control"].enumerated().map {
     ($0.element, WorkDirectory(device: 1, inode: UInt64($0.offset + 1)))
 })
+// A remount may change st_dev without changing the volume or directory.
+func directory(_ device: Int, _ inode: Int = 17, _ volume: String = "11111111-1111-1111-1111-111111111111") throws -> WorkDirectory {
+    try JSONDecoder().decode(WorkDirectory.self, from: Data("{\"device\":\(device),\"inode\":\(inode),\"volumeUUID\":\"\(volume)\"}".utf8))
+}
+check(try directory(1) == directory(2), "같은 볼륨·inode는 재마운트 뒤에도 동일")
+check(try directory(1) != directory(1, 18), "동일 볼륨의 폴더 교체 차단")
+check(try directory(1) != directory(1, 17, "22222222-2222-2222-2222-222222222222"), "장치 번호·inode가 같은 다른 볼륨 차단")
+check(try directory(1) != WorkDirectory(device: 1, inode: 17), "UUID 없는 기록을 자동으로 동일시하지 않음")
 func plan(_ at: Date = time) -> AppInitialTrialPlan {
     AppInitialTrialPlan(requestID: UUID(), requestedAt: at, domain: .synthetic, root: "/synthetic/work",
         bundlePath: "/synthetic/App.app", executablePath: "/synthetic/App.app/Contents/MacOS/App",

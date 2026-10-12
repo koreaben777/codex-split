@@ -35,6 +35,7 @@ class InstallTests(unittest.TestCase):
         self.review_path = root / 'REVIEW.json'
         self.review()
         self.official_calls = 0
+        self.directory_report = {'status': 'unchanged', 'directories': {'fixture': 1}}
 
     def daily(self, value):
         path = self.control / 'work-daily.json'
@@ -51,7 +52,8 @@ class InstallTests(unittest.TestCase):
 
     def deploy(self, install=True, root=None, **kw):
         args = dict(destination=self.destination, control=self.control, verify_signature=lambda p: None,
-                    check_idle=lambda: None, official=self.official, base=self.base)
+                    check_idle=lambda: None, official=self.official, base=self.base,
+                    directories=lambda root: self.directory_report.copy())
         args.update(kw)
         return m.deploy(root or self.base, self.review_path, self.from_sha, self.to_sha, install, **args)
 
@@ -106,6 +108,26 @@ class InstallTests(unittest.TestCase):
     def test_official_mismatch_blocks(self):
         def mismatch(root): raise RuntimeError('pin 불일치')
         with self.assertRaises(RuntimeError): self.deploy(official=mismatch)
+        self.assert_untouched()
+
+    def test_directory_conflict_blocks_before_replacement(self):
+        self.directory_report['status'] = 'blocked'
+        with self.assertRaisesRegex(RuntimeError, '폴더'): self.deploy()
+        self.assert_untouched()
+
+    def test_directory_change_during_staging_preserves_old_launcher(self):
+        def changed(root):
+            self.official_calls += 1
+            if self.official_calls == 3: self.directory_report['directories'] = {'fixture': 2}
+        with self.assertRaisesRegex(RuntimeError, '폴더'): self.deploy(official=changed)
+        self.assertEqual(m.replacement.manifest(self.destination), self.old)
+
+    def test_legacy_rebind_is_reported_without_migrating_records(self):
+        before = (self.control / 'work-daily.json').read_bytes()
+        self.directory_report['status'] = 'confirmation-required'
+        result = self.deploy(install=False)
+        self.assertEqual(result['directoryStatus'], 'confirmation-required')
+        self.assertEqual((self.control / 'work-daily.json').read_bytes(), before)
         self.assert_untouched()
 
     def test_official_update_mid_replacement_preserves_old_launcher(self):

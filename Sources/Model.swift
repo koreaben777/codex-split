@@ -129,7 +129,7 @@ struct Command {
         case "status":
             guard args.count == 2 || (args.count == 3 && args[2] == "--json") else { throw Failure.invalidArguments }
             result.json = args.count == 3
-        case "update-check", "update-plan":
+        case "update-check", "update-plan", "update-directory-check":
             guard profile == .work, args.count == 2 || (args.count == 3 && args[2] == "--json") else { throw Failure.invalidArguments }
             result.json = args.count == 3
         case "app":

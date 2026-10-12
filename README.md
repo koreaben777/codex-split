@@ -24,31 +24,29 @@ macOS에서 공식 ChatGPT(Codex) 데스크톱 앱을 기존 개인 프로필과
 
 ## 시작하기
 
-이 저장소를 clone한 디렉터리에서:
+처음 설치하는 팀원은 저장소를 받은 뒤 **Terminal에서 명령 하나**를 실행하면 됩니다.
 
 ```sh
-sh scripts/check.sh
+sh scripts/install.sh
 ```
 
-1. **설치된 공식 앱 버전 고정** — 저장소의 고정값과 설치된 버전이 다르면, 처음 설정 전에만 다음을 실행한 뒤 검사를 다시 돌립니다. 서명과 업무 저장소 분리 표식이 확인된 경우에만 고정합니다.
-   ```sh
-   python3 scripts/update-work.py --pin-installed
-   sh scripts/check.sh
-   ```
-   이 명령은 추적 파일 `Sources/AppTrial.swift`의 고정값 블록을 고칩니다. 이후 `git pull` 전에 로컬 커밋하거나 충돌을 직접 정리하세요.
-2. **업무 프로필 설정** — Terminal에서 실행합니다. 새 업무 창에서 직접 로그인하고, 업무 계정·개인 앱 상태를 확인한 뒤 종료, 그리고 재실행 한 번으로 로그인 유지를 확인합니다. 단계마다 정확한 입력(`LOGIN work`, `REOPEN work`, `QUIT`)을 요구합니다.
-   ```sh
-   .build/codex-split-work-setup --setup work
-   ```
-3. **런처 설치** — 이 checkout에서 빌드한 런처를 `~/Applications/CodexSplit-work.app`에 처음 설치합니다(이미 있으면 거부).
-   ```sh
-   python3 scripts/install-work-update-approved.py --install-new
-   ```
-4. **수용과 일상 사용** — `CodexSplit-work.app`을 열어 수용 시험을 두 번 진행합니다. 수용 중에만 나타나는 메뉴 막대의 `업무 확인` 메뉴에서 계정·개인 앱·프로젝트 확인과 정상 종료 준비를 선택하고, 해당 업무 창에서 Cmd-Q 합니다. 두 번 성공하면 런처가 일상 사용 허용을 묻습니다. 일상 사용에는 메뉴 막대 항목이 없고, 업무 창에서 Cmd-Q 하면 런처도 함께 닫힙니다.
+아직 저장소를 받지 않았다면, 소스를 계속 보관할 폴더에서 다음 한 줄로 clone과 설치를 시작할 수 있습니다. 위 요구 사항을 먼저 준비하세요.
+
+```sh
+git clone https://github.com/koreaben777/codex-split.git && cd codex-split && sh scripts/install.sh
+```
+
+설치 명령이 개발 도구 확인 → 검사 도구 빌드 → 설치된 공식 앱의 서명·버전 확인 및 고정 → 전체 검사·런처 빌드 → 대화형 업무 계정 설정 → 런처 설치를 연결합니다. `sudo`는 쓰지 않습니다. 기존 업무 프로필이나 설치된 런처가 있으면 덮어쓰지 않고 중단합니다.
+
+**사람이 해야 하는 확인은 남아 있습니다.** 검사 후 열리는 업무 창에서 본인 업무 계정으로 로그인하고, Terminal 안내에 따라 개인 앱 상태와 종료·재실행을 확인합니다. 설치 완료 후 `~/Applications/CodexSplit-work.app`을 열어 수용 시험 두 번과 일상 사용 허용을 마치면, 이후부터는 런처를 클릭해서 사용합니다.
+
+**소스 폴더를 이동·삭제하지 마세요.** 공식 앱 업데이트 대응 시 이 폴더에서 새 런처를 빌드합니다. 설치 시 `Sources/AppTrial.swift`의 고정값이 로컬에서 바뀔 수 있으며, GitHub 소스 갱신 전에는 이 변경을 확인해야 합니다.
+
+준비 사항, 화면에서 입력할 내용, 중단 후 재개, 수동 설치는 **[팀원 설치 안내](docs/INSTALL.md)**에 정리되어 있습니다.
 
 ### 다른 위치의 기존 업무 프로필 옮기기
 
-`codex`, `desktop`, `cwd`(선택: `control`) 구조의 기존 업무 프로필이 다른 위치에 있으면, 2단계 대신 다음으로 옮겨 계속 쓸 수 있습니다. 업무 앱·런처·관련 helper를 모두 종료한 뒤 실행합니다.
+`codex`, `desktop`, `cwd`(선택: `control`) 구조의 기존 업무 프로필이 다른 위치에 있으면, [수동 설치](docs/INSTALL.md#수동-설치)의 업무 프로필 설정 대신 다음으로 옮겨 계속 쓸 수 있습니다. 업무 앱·런처·관련 helper를 모두 종료한 뒤 실행합니다.
 
 ```sh
 .build/codex-split-work-setup --adopt work --from /absolute/path/to/old/work
@@ -75,7 +73,7 @@ python3 scripts/install-work-update-approved.py --install-new --retire-existing
 
 실행 중 경로는 `$HOME`이 아니라 계정 정보(`getpwuid`)에서 계산하므로 환경 변수로 다른 위치를 가리킬 수 없습니다. 업데이트 후보를 만들 소스 위치는 빌드할 때 런처 번들의 `Contents/Resources/source-root`에 기록됩니다(`CODEXSPLIT_SOURCE_ROOT`로 지정 가능, 기본은 checkout). 런처는 실행 시 자기 번들 서명을 검증하므로 설치 뒤 이 값을 바꾸면 실행하지 않습니다.
 
-수용 시험에서 다른 계정·개인 앱 변화·확인 불가를 보고하면 그 기록은 보존되고 이후 실행과 업데이트가 멈춥니다. 원인을 확인한 뒤 다시 시작하려면 업무 프로필 폴더 전체를 다른 위치로 옮겨 보존하고 2단계(업무 프로필 설정)부터 진행하세요. CodexSplit은 기록이나 로그인 데이터를 자동으로 지우지 않습니다.
+수용 시험에서 다른 계정·개인 앱 변화·확인 불가를 보고하면 그 기록은 보존되고 이후 실행과 업데이트가 멈춥니다. 원인을 확인한 뒤 다시 시작하려면 업무 프로필 폴더 전체를 다른 위치로 옮겨 보존하고 [수동 설치](docs/INSTALL.md#수동-설치)의 업무 프로필 설정부터 진행하세요. CodexSplit은 기록이나 로그인 데이터를 자동으로 지우지 않습니다.
 
 ## 제한
 
@@ -91,7 +89,7 @@ python3 scripts/install-work-update-approved.py --install-new --retire-existing
 ## 구성
 
 - `Sources/` — CLI·정책(`Model`, `Policy`, `Runtime`, `App*`), 공식 앱 실행·관측(`AppTrial*`, `WorkProcess`, `Native.c`), 업무 설정(`WorkSetup`), 런처 기록·업데이트 전환(`WorkDaily`, `WorkUpdate*`), GUI 런처(`WorkDailyUI`)
-- `scripts/` — 빌드·검사, `update-work.py`(감지·후보·자동 대응), `install-work-update-approved.py`·`launcher_replacement.py`(설치·교체·복원)
+- `scripts/` — `install.sh`·`install-work.py`(처음 설치), 빌드·검사, `update-work.py`(감지·후보·자동 대응), `install-work-update-approved.py`·`launcher_replacement.py`(설치·교체·복원)
 - `Tests/` — 합성 시험
 
 ## 라이선스

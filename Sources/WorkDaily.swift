@@ -154,12 +154,19 @@ struct WorkDailyUpdateTransition: Codable {
     let replacement: WorkDailyReplacementEvidence?
     let approvedAt: Date
     var carryOver: Bool? = nil // true only; re-verified against the archived predecessor on every read
+    var previousDirectories: [String: WorkDirectory]? = nil
+    var directoryRebindBootSession: String? = nil
     var versionChanged: Bool { !WorkDailyState.sameTarget(fromPlan, toPlan) }
     static func validReviewID(_ value: String) -> Bool {
         value.range(of: "^work-update-[0-9a-f]{32}$", options: .regularExpression) != nil
     }
     func valid(now: Date) -> Bool {
         let domain = toPlan.domain
+        guard (previousDirectories != nil) == (directoryRebindBootSession != nil) else { return false }
+        if let previousDirectories, let directoryRebindBootSession {
+            guard UUID(uuidString: directoryRebindBootSession) != nil,
+                  WorkDirectory.canAnchor(previousDirectories, to: directories) else { return false }
+        }
         guard fromPlan.domain == domain, setupPlan.domain == domain,
               domain != .production || ([setupPlan, fromPlan, toPlan].allSatisfy(\.isRecordedWorkPlan) && replacement != nil),
               replacement?.valid() ?? true,
@@ -192,7 +199,22 @@ struct WorkDailyState: Codable {
         value.count == 64 && value.allSatisfy { "0123456789abcdef".contains($0) }
     }
     static func validDirectories(_ value: [String: WorkDirectory]) -> Bool {
-        Set(value.keys) == Set(["", "codex", "desktop", "cwd", "control"]) && value.values.allSatisfy { $0.inode > 0 }
+        Set(value.keys) == Set(["", "codex", "desktop", "cwd", "control"]) &&
+            value.values.allSatisfy { $0.inode > 0 } && Set(value.values.map(\.volumeUUID)).count == 1
+    }
+    func canRebindDirectories(to current: [String: WorkDirectory], bootSession: String) -> Bool {
+        guard UUID(uuidString: bootSession) != nil, let segment, !pending,
+              !attempts.contains(where: \.rejectedReport), WorkDirectory.canAnchor(segment.directories, to: current) else { return false }
+        if segment.directories.allSatisfy({ current[$0.key]?.device == $0.value.device }) { return true }
+        // No stored UUID proves the old volume: changed device numbers also need a different boot and UI consent.
+        guard let previousBoot = attempts.last?.bootSession else { return false }
+        return previousBoot != bootSession
+    }
+    func directoryStatus(_ current: [String: WorkDirectory], bootSession: String) -> String {
+        guard Self.validDirectories(current) else { return "blocked" }
+        guard let segment else { return "unchanged" }
+        if segment.directories == current { return "unchanged" }
+        return canRebindDirectories(to: current, bootSession: bootSession) ? "confirmation-required" : "blocked"
     }
     static func sameTarget(_ a: AppInitialTrialPlan, _ b: AppInitialTrialPlan) -> Bool {
         WorkSetupRecord(plan: a, approvedAt: a.requestedAt).sameTarget(as: b)
@@ -358,7 +380,10 @@ struct WorkDailyState: Codable {
         }
         func directories(_ value: Any?) -> Bool {
             guard let values = value as? [String: [String: Any]] else { return false }
-            return values.values.allSatisfy { Set($0.keys) == ["device", "inode"] }
+            return values.values.allSatisfy {
+                Set($0.keys) == ["device", "inode"] ||
+                    (Set($0.keys) == ["device", "inode", "volumeUUID"] && $0["volumeUUID"] is String)
+            }
         }
         guard let attempts = object["attempts"] as? [[String: Any]] else { return false }
         let attemptKeys: Set<String> = ["id", "plan", "scope", "approvedAt", "toolFingerprint", "directories", "owner", "bootSession", "phase", "receipt", "generation", "heartbeatAt", "reportAt", "account", "personal", "projectsConnected", "quitIntentAt", "endedAt", "observerLostAt", "diagnostic", "resolvedAt", "resolution"]
@@ -442,8 +467,11 @@ struct WorkDailyCoordinator {
         }
         guard !prior.pending, !prior.attempts.contains(where: \.rejectedReport),
               segment.plan == update.fromPlan, segment.toolFingerprint == update.fromToolFingerprint,
-              segment.directories == update.directories,
+              segment.directories == (update.previousDirectories ?? update.directories),
               prior.update.map({ $0.setupPlan == update.setupPlan }) ?? Self.sameTarget(update.setupPlan, segment.plan) else { throw Failure.stateInvalid }
+        if let boot = update.directoryRebindBootSession {
+            guard prior.canRebindDirectories(to: update.directories, bootSession: boot) else { throw Failure.stateInvalid }
+        }
         return prior
     }
     private static func sameTarget(_ a: AppInitialTrialPlan, _ b: AppInitialTrialPlan) -> Bool { WorkDailyState.sameTarget(a, b) }
@@ -452,6 +480,7 @@ struct WorkDailyCoordinator {
     func beginUpdate(plan: AppInitialTrialPlan, accepted: Bool, consentAt: Date, toolFingerprint: String,
                      directories: [String: WorkDirectory], reviewID: String?,
                      replacement: WorkDailyReplacementEvidence?, replacedToolFingerprint: String? = nil,
+                     directoryRebindAccepted: Bool = false, bootSession: String? = nil,
                      inspect: () throws -> Void) throws -> WorkDailyUpdateTransition {
         guard accepted else { throw Failure.approvalRequired }
         guard plan.domain == domain else { throw Failure.capabilityUnknown }
@@ -465,8 +494,12 @@ struct WorkDailyCoordinator {
             let saved = try store.readLocked()
             guard let setup = saved.workSetup, setup.completed else { throw Failure.approvalRequired }
             guard let segment = prior.segment ?? replacedToolFingerprint.map({ (setup.plan, $0, directories) }),
-                  !prior.pending, !prior.attempts.contains(where: \.rejectedReport),
-                  segment.directories == directories else { throw Failure.approvalRequired }
+                  !prior.pending, !prior.attempts.contains(where: \.rejectedReport) else { throw Failure.approvalRequired }
+            let rebind = segment.directories != directories
+            if rebind {
+                guard directoryRebindAccepted, let bootSession,
+                      prior.canRebindDirectories(to: directories, bootSession: bootSession) else { throw Failure.approvalRequired }
+            }
             if domain == .production { try Self.prerequisites(saved, plan: segment.plan, daily: prior) }
             guard prior.update.map({ $0.setupPlan == setup.plan }) ?? setup.sameTarget(as: segment.plan) else { throw Failure.approvalRequired }
             let versionChanged = !Self.sameTarget(segment.plan, plan)
@@ -487,7 +520,9 @@ struct WorkDailyCoordinator {
             let update = WorkDailyUpdateTransition(reviewID: reviewID, setupPlan: setup.plan, fromPlan: segment.plan, toPlan: plan,
                 fromToolFingerprint: segment.toolFingerprint, toToolFingerprint: toolFingerprint, directories: directories,
                 previousArchiveID: UUID(), previousArchiveSHA256: dailyDataDigest(data), replacement: replacement, approvedAt: now(),
-                carryOver: prior.carriesGrant ? true : nil)
+                carryOver: prior.carriesGrant ? true : nil,
+                previousDirectories: rebind ? segment.directories : nil,
+                directoryRebindBootSession: rebind ? bootSession : nil)
             var next = WorkDailyState(); next.schemaVersion = 2; next.update = update
             guard next.valid(now: now()) else { throw Failure.stateInvalid }
             try store.archiveWorkDailyLocked(data, id: update.previousArchiveID)
