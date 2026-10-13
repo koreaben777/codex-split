@@ -1,8 +1,8 @@
 # 공식 앱 업데이트 대응
 
-처음 설치하는 팀원은 [설치 안내](INSTALL.md)의 `sh scripts/install.sh`를 사용하세요. 이 문서는 기존 설치의 공식 앱 버전 변경·런처 교체에 관한 안내입니다. GitHub에서 코드를 받는 것만으로 설치된 런처가 교체되지는 않습니다.
+처음 설치하는 사용자는 [설치 안내](INSTALL.md)의 `sh scripts/install.sh`를 사용하세요. 이 문서는 기존 설치의 공식 앱 버전 변경·런처 교체에 관한 안내입니다. GitHub에서 코드를 받는 것만으로 설치된 런처가 교체되지는 않습니다.
 
-자동 대응은 서명 검사 생략이나 버전·해시 제한 해제가 아닙니다. 공식 앱과 번들 CLI는 언제나 정확한 고정값과 identifier별 strict 서명을 통과해야 실행되며, 새 버전은 **검토 edge 하나**로만 이어집니다. 이전 성공은 새 런처나 새 버전으로 이어지지 않습니다. 직전 구간에 일상 허용이 있었다면 새 구간의 첫 업무 창에서 계정·개인 앱·프로젝트를 한 번 확인하고 정상 종료가 관측될 때 허용을 다시 발급합니다(허용 승계, 기록의 `carryOver`). 확인 결과가 다르면 지금처럼 실행을 막습니다.
+자동 대응은 서명 검사 생략이나 버전·해시 제한 해제가 아닙니다. 공식 앱과 번들 CLI는 언제나 정확한 고정값과 identifier별 strict 서명을 통과해야 실행되며, 새 버전은 이전 대상과 새 대상을 연결한 **검토 기록 하나**로만 이어집니다. 이전 성공 횟수는 새 구간으로 복사하지 않습니다. 직전 구간에 일상 허용이 있었거나, 이전 허용을 이어받는 구간(`carryOver`)의 확인 방문을 이미 마쳤다면 새 구간의 첫 업무 창에서 계정·개인 앱·프로젝트를 한 번 확인하고 정상 종료가 관측될 때 허용을 다시 발급합니다(허용 승계, 기록의 `carryOver`). 확인 결과가 다르면 지금처럼 실행을 막습니다.
 
 ## 흐름
 
@@ -12,8 +12,8 @@
 | 후보 검증 | `update-work.py`: 서명 확인된 변경만 격리 복사본에 고정값 이력·검토 ID를 추가하고 전체 검사·빌드, 앱 재검사 | 자동 대응 동의 또는 직접 실행 |
 | 호환성 확인 | 업무 저장소 분리 표식 정적 점검 + 검토 기록(`REVIEW.json`) | 자동 대응 동의 또는 수동 검토 |
 | 배치 | `install-work-update-approved.py`: 런처 미실행, 미해결 방문·거부 보고 없음, 기록 불변, 후보 고정값과 공식 앱 일치(strict)를 확인한 뒤 백업·배타 이동·영수증으로 교체 | 자동 대응 동의 또는 설치 실행 |
-| 버전 전환 | 새 런처 실행 → 영수증·binding·edge·공식 앱 재검사 → 동의하면 이전 구간을 불변 보존본으로 남기고 성공 0회·허용 없음의 새 구간 시작(직전 허용이 있으면 이 동의로 첫 업무 창도 엶) | GUI 동의 |
-| 수용·일상 | 직전 허용이 있으면 업무 중 확인 1회 → 정상 종료 시 허용 재발급(별도 동의 없음). 없으면 수용 시험 두 번 뒤 별도 일상 허용 | 필요 |
+| 버전 전환 | 새 런처 실행 → 영수증·binding·edge·공식 앱 재검사 → 동의하면 이전 구간을 불변 보존본으로 남기고 성공 0회·허용 없음의 새 구간 시작(직전 허용 또는 carryOver 확인 완료 기록이 있으면 이 동의로 첫 업무 창도 엶) | GUI 동의 |
+| 수용·일상 | 직전 허용 또는 carryOver 확인 완료 기록이 있으면 업무 중 확인 1회 → 정상 종료 시 허용 재발급(별도 동의 없음). 없으면 수용 시험 두 번 뒤 별도 일상 허용 | 필요 |
 | 실패 복구 | 새 구간 전환 전: `--restore-backup`으로 이전 런처 복원(수동). 전환 후: 이전 런처는 새 기록을 읽지 못해 실행을 막음 | 필요 |
 
 자동 롤백은 없습니다. 공식 앱 버전을 되돌리거나 수정·재서명하지 않습니다.
@@ -31,33 +31,83 @@ UUID가 없는 이전 기록은 자동으로 새 기록과 일치시키지 않�
 1. 공식 앱에서 업데이트를 설치합니다.
 2. 업무 런처를 열면 서명·identifier가 확인된 새 버전을 감지하고 **자동 대응 시작** 동의를 한 번 받습니다. 서명을 확인하지 못하면 제안하지 않습니다.
 3. 런처는 `update-work.py --auto`를 분리 실행하고 닫힙니다. 스크립트가 공식 앱 재검사, 업무 저장소 분리 표식(`CODEX_ELECTRON_USER_DATA_PATH`, `CODEX_HOME`, `CODEX_SQLITE_HOME`, `user-data-dir`) 정적 점검, 격리 후보 빌드와 `scripts/check.sh`, 앱 재검사를 하고, 런처가 닫혀 있을 때(최대 10분 대기) 백업·영수증과 함께 교체합니다. 시작·완료·중단은 macOS 알림으로 알리고, 진행 중에는 '업데이트 자동 대응' 창(`.build/codex-split-update-progress`)이 단계와 최근 시험 줄을 보여 줍니다. 이 창은 실행 기록을 읽기만 하므로 닫아도 자동 대응은 계속됩니다. 교체가 끝나면 배포된 후보의 고정값 블록을 원본 폴더의 `Sources/AppTrial.swift`에 반영하고 그 파일만 커밋합니다(작성자는 현재 HEAD 커밋의 작성자, 시각은 UTC, push는 하지 않음). 그래서 다음 후보는 원본 폴더에서 만들어지고, 그동안의 원본 폴더 변경이 런처에 들어갑니다. 원본 폴더의 고정값이 이미 달라졌거나 그 파일에 커밋되지 않은 변경이 있으면 건드리지 않고 `RESULT.json`의 `pinSync`에 사유를 남깁니다.
-4. 런처를 다시 열어 새 구간 시작에 동의하면 업무 창이 열립니다. 업무 중 메뉴 막대 `업무 확인`에서 계정·개인 앱·프로젝트를 한 번 확인하고 Cmd-Q로 닫으면 다음 실행부터 일상 사용이 이어집니다. 직전 일상 허용이 없었다면 수용 시험 두 번과 일상 허용 동의를 받습니다.
+4. 런처를 다시 열어 새 구간 시작에 동의하면 업무 창이 열립니다. 업무 중 메뉴 막대 `업무 확인`에서 계정·개인 앱·프로젝트를 한 번 확인하고 Cmd-Q로 닫으면 다음 실행부터 일상 사용이 이어집니다. 직전 일상 허용이나 carryOver 확인 완료 기록이 없었다면 수용 시험 두 번과 일상 허용 동의를 받습니다.
 
 자동 모드의 `REVIEW.json`은 `mode: automatic`이며 항목마다 `automatic`과 실제로 확인한 내용만 적습니다. 공식 변경 내역은 사람이 검토하지 않았다고 명시하고, 저장·인증 분리는 정적 표식과 새 구간의 사용자 확인으로 확인합니다. 같은 공식 버전에서 런처만 바꾸는 경우에는 자동 모드를 쓸 수 없습니다. 분리 표식이 하나라도 없으면 빌드 전에 `blocked-incompatible`로 멈춥니다.
 
 ## 수동 경로
 
+수동 교체는 실제 검토를 마친 사용자를 위한 절차입니다. 아래 경로와 해시는 설명용 값이므로 자신의 검사 결과로 바꿔야 합니다. 각 명령이 성공한 경우에만 다음 단계로 진행하세요.
+
+### 1. 교체할 후보 준비
+
+공식 앱 버전이 변경된 경우:
+
 ```sh
 sh scripts/build.sh
 .build/codex-split update-check work --json
-python3 scripts/update-work.py              # 후보: .build/work-updates/<id>/candidate
-python3 scripts/install-work-update-approved.py --manifest ~/Applications/CodexSplit-work.app        # 설치본
-python3 scripts/install-work-update-approved.py --manifest <후보>/.build/CodexSplit-work-standalone.app  # 후보
-python3 scripts/install-work-update-approved.py --preflight --candidate-root <후보> \
-  --review <REVIEW.json> --from-manifest-sha256 <설치본> --to-manifest-sha256 <후보>
-python3 scripts/install-work-update-approved.py --install ...      # 같은 인자
+python3 scripts/update-work.py
 ```
 
-`REVIEW.json` 형식:
+`update-check`는 `pinned`일 때 종료 코드 0, 검토 필요 또는 확인 불가일 때 2를 반환합니다. `review-required`인 경우에만 후보 준비로 진행하고, `unverified`라면 원인을 먼저 확인하세요.
+
+`update-work.py`는 검사에 통과한 후보도 **검토 대기 상태에서 종료 코드 2**를 반환합니다. 출력된 실행 폴더의 `RESULT.json`에서 `phase`가 `awaiting-compatibility-review`인지 확인하세요. 이 경우 후보 경로는 `.build/work-updates/<실행 ID>/candidate`, 검토 ID는 `RESULT.json`의 `reviewID`입니다. `blocked-*` 상태를 성공으로 해석하지 마세요.
+
+공식 앱은 그대로이고 CodexSplit 코드만 교체하는 경우에는 검토한 코드가 있는 운영 checkout에서 `sh scripts/check.sh`를 실행합니다. 이때 후보 경로는 **checkout 자체의 절대 경로**, 검토 ID는 JSON `null`입니다. `build.sh`만으로는 업무 GUI 런처가 만들어지지 않습니다. 공식 앱 변경을 자동 처리하는 `--auto`는 이 경우에 사용할 수 없습니다.
+
+### 2. 번들 해시와 검토 기록 준비
+
+다음 명령이 출력하는 값은 번들 manifest 전체의 SHA-256입니다. 실행 파일 하나의 해시와 다릅니다.
+
+```sh
+python3 scripts/install-work-update-approved.py --manifest "$HOME/Applications/CodexSplit-work.app"
+python3 scripts/install-work-update-approved.py --manifest /absolute/candidate/.build/CodexSplit-work-standalone.app
+```
+
+첫 출력은 `--from-manifest-sha256`, 두 번째 출력은 `--to-manifest-sha256` 및 `candidateManifestSHA256`에 사용합니다.
+
+후보에 대한 `REVIEW.json`을 작성합니다. 아래는 **아직 승인되지 않은** 유효한 JSON 양식입니다. 실제 `reviewID`와 해시를 넣고, 여섯 항목을 각각 검토한 후 `result`를 `accepted`로 바꾸고 `evidence`에 근거를 기록하세요. 빈 근거나 `not-reviewed`는 설치 시 거부됩니다. 실행 기록·계정·경로가 포함될 수 있으므로 이 파일을 공개 PR에 첨부하지 마세요.
 
 ```json
-{"schemaVersion": 1, "mode": "reviewed", "reviewID": "<후보 ID, 런처만 교체하면 null>",
- "candidateManifestSHA256": "<후보 bundle manifest>",
- "items": {"baseline": {"result": "accepted", "evidence": "..."}, "release-evidence": {...},
-           "identity": {...}, "storage-auth-ipc": {...}, "preservation-recovery": {...}, "trial-consent": {...}}}
+{
+  "schemaVersion": 1,
+  "mode": "reviewed",
+  "reviewID": "work-update-REPLACE_WITH_CANDIDATE_ID",
+  "candidateManifestSHA256": "REPLACE_WITH_CANDIDATE_MANIFEST_SHA256",
+  "items": {
+    "baseline": {"result": "not-reviewed", "evidence": ""},
+    "release-evidence": {"result": "not-reviewed", "evidence": ""},
+    "identity": {"result": "not-reviewed", "evidence": ""},
+    "storage-auth-ipc": {"result": "not-reviewed", "evidence": ""},
+    "preservation-recovery": {"result": "not-reviewed", "evidence": ""},
+    "trial-consent": {"result": "not-reviewed", "evidence": ""}
+  }
+}
 ```
 
-원본은 교체 workspace에 `REVIEW.json`으로, binding은 `UPDATE.json`으로 보존됩니다.
+항목별 검토 요구 사항은 `.build/codex-split update-plan work --json`으로 확인할 수 있습니다. 자동 대응 기록을 사람이 검토한 기록으로 바꾸어 쓰지 마세요.
+
+### 3. 사전 확인 후 교체
+
+업무 앱과 런처를 종료한 뒤 후보·검토 파일의 절대 경로 및 두 manifest 해시를 넣습니다.
+
+```sh
+python3 scripts/install-work-update-approved.py --preflight \
+  --candidate-root /absolute/candidate \
+  --review /absolute/REVIEW.json \
+  --from-manifest-sha256 FROM_MANIFEST_SHA256 \
+  --to-manifest-sha256 TO_MANIFEST_SHA256
+```
+
+사전 확인이 통과하면 같은 인자를 유지하고 `--preflight`만 `--install`로 바꿔 실행합니다. 검토 원본은 교체 폴더의 `REVIEW.json`, 대상과의 연결 기록은 `UPDATE.json`으로 보존됩니다. 교체 완료는 실행 승인이 아니며 새 런처에서 구간 전환과 수용 확인이 필요합니다.
+
+새 구간 전환 전에 이전 런처로 복원하려면 런처가 종료된 상태에서 다음을 사용합니다. 경로는 설치 시 출력한 **교체 영수증**이며, 후보 생성 폴더의 `RESULT.json`과 혼동하지 마세요.
+
+```sh
+python3 scripts/install-work-update-approved.py --restore-backup --receipt /absolute/replacement/RESULT.json
+```
+
+공식 앱 파일은 복원하지 않습니다. 공식 앱이 이전 고정값과 다르면 이전 런처도 실행을 막습니다. 부분 실패의 상태별 대응은 아래 표를 참고하세요.
 
 ## 고정값 이력과 검토 edge
 
@@ -67,7 +117,7 @@ python3 scripts/install-work-update-approved.py --install ...      # 같은 인�
 - `history`: 이전 승인 대상. 보존된 설정·실행 기록을 **읽는 데만** 쓰고, 실행·저장소 연결·공식 앱 검사에는 쓸 수 없습니다.
 - `updateReviewID`: `history.first → current` edge 하나. 런처는 이 edge와 맞는 이전 구간에서만 버전 전환을 제안합니다.
 
-연속 업데이트: `update-work.py`는 설치된 런처를 만든 후보가 있으면 그 후보 소스에서 다음 후보를 만들어 이력을 잇습니다. 배치는 (1) 교체할 런처가 현재 구간의 런처와 같고 (2) 후보 edge의 시작 버전이 현재 구간 버전과 같을 때만 진행합니다.
+연속 업데이트: `update-work.py`는 설치된 런처를 만든 후보가 있고 운영 checkout의 고정값과 다르면 그 후보 소스에서 다음 후보를 만듭니다. 고정값이 동기화되어 같으면 운영 checkout을 사용합니다. 배치는 (1) 교체할 런처가 현재 구간의 런처와 같고 (2) 후보 edge의 시작 버전이 현재 구간 버전과 같을 때만 진행합니다.
 
 업무 설정만 마치고 런처를 아직 한 번도 열지 않은 상태에서 업데이트가 와도 같은 경로로 이어집니다. 이때는 완료된 설정의 버전이 edge 시작점이 되고, 교체 영수증의 이전 런처가 전환 기록에 남습니다.
 
@@ -77,7 +127,7 @@ python3 scripts/install-work-update-approved.py --install ...      # 같은 인�
 
 - 업무 창이 열려 있는 동안 공식 앱이 디스크에서 바뀌어도 커널 세대로 종료를 계속 관측합니다. 런처를 다시 누르면 기존 창만 활성화하고 바뀐 사실을 알립니다.
 - 종료 뒤 다음 실행은 고정값 불일치로 막고 자동 대응을 제안합니다.
-- 검사 도중 파일이 바뀌면 `unverified`, 배치 도중 공식 앱·기록이 바뀌면 교체를 중단하고 이전 런처를 유지합니다.
+- 검사 도중 파일이 바뀌면 `unverified`가 됩니다. 배치 도중 공식 앱·기록이 바뀌면 교체 절차를 중단합니다. 이미 이전 런처를 이동한 뒤라면 설치 경로가 비어 있거나 새 런처가 게시된 상태일 수 있으므로 아래 부분 실패 표와 영수증을 확인하세요.
 
 ## 부분 실패
 
