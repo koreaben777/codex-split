@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('update_work', Path(__file__).resolve().parents[1] / 'scripts/update-work.py')
 module = importlib.util.module_from_spec(spec)
@@ -66,6 +67,43 @@ class UpdateTests(unittest.TestCase):
         value['expected']['requestID'] = str(self.calls)
         value['expected']['requestedAt'] = self.calls
         return value
+
+    def test_inspection_rebuilds_checker_after_source_pin_sync(self):
+        executable = self.base / '.build/codex-split'
+        executable.parent.mkdir()
+        stale = report()
+        stale['expected']['appVersion'] = 'stale'
+        executable.write_text('#!/bin/sh\ncat <<\'REPORT\'\n' + json.dumps(stale) + '\nREPORT\nexit 2\n')
+        executable.chmod(0o700)
+        fresh = report()
+        checker = '#!/bin/sh\necho inspected >> \"$(dirname \"$0\")/inspection-count\"\ncat <<\'REPORT\'\n' + json.dumps(fresh) + '\nREPORT\nexit 2\n'
+        build = self.base / 'scripts/build.sh'
+        build.write_text('set -eu\n[ \"$1\" = --checker-only ]\necho built >> .build/build-count\ncat > .build/codex-split <<\'CHECKER\'\n' + checker + 'CHECKER\nchmod 700 .build/codex-split\n')
+        (self.base / 'scripts/sources.sh').write_text('# fixture\n')
+        cache = {}
+        self.assertEqual(module.inspect(self.base, cache)['expected']['appVersion'], '1.0')
+        self.assertEqual(module.inspect(self.base, cache)['expected']['appVersion'], '1.0')
+        count = executable.parent / 'build-count'
+        self.assertEqual(len(count.read_text().splitlines()), 1)
+        (self.base / 'Sources/AppTrial.swift').write_text(MANAGED + '// changed\n')
+        module.inspect(self.base, cache)
+        self.assertEqual(len(count.read_text().splitlines()), 2)
+        executable.write_text('stale executable')
+        module.inspect(self.base, cache)
+        self.assertEqual(len(count.read_text().splitlines()), 3)
+        module.inspect(self.base, {})
+        self.assertEqual(len(count.read_text().splitlines()), 4)
+        self.assertEqual(len((executable.parent / 'inspection-count').read_text().splitlines()), 5)
+        valid_build = build.read_text()
+        # A failed rebuild must never fall back to the existing executable.
+        build.write_text('exit 1\n')
+        with self.assertRaises(RuntimeError):
+            module.inspect(self.base, cache)
+        self.assertFalse(cache)
+        build.write_text(valid_build + 'echo changed >> Sources/AppTrial.swift\n')
+        with self.assertRaisesRegex(RuntimeError, '빌드 중 검사 소스 변경'):
+            module.inspect(self.base, cache)
+        self.assertFalse(cache)
 
     def test_stage_and_reinspect_without_promoting(self):
         original = (self.base / 'Sources/AppTrial.swift').read_bytes()
@@ -183,7 +221,7 @@ class UpdateTests(unittest.TestCase):
         asar.write_bytes(asar.read_bytes().replace(b'CODEX_ELECTRON_USER_DATA_PATH', b'REMOVED'))
         self.assertEqual(module.isolation_markers(bundle.resolve())['Contents/Resources/app.asar']['missing'], ['CODEX_ELECTRON_USER_DATA_PATH'])
 
-    def automatic(self, deploy=None, idle_failures=0, consent_age=0, pipeline_run=None):
+    def automatic(self, deploy=None, idle_failures=0, consent_age=0, pipeline_run=None, preflight=None, alert=None):
         alerts, sleeps, calls = [], [], []
         idle_state = {'remaining': idle_failures}
         def idle():
@@ -194,11 +232,11 @@ class UpdateTests(unittest.TestCase):
             calls.append((root, json.loads(Path(review).read_text()), from_sha, to_sha, install))
             return {'receipt': '/receipt/RESULT.json', 'backup': '/receipt/previous.app'}
         installer = type('Installer', (), dict(replacement=FakeReplacement, DESTINATION=Path('/installed.app'),
-                                               launcher_idle=staticmethod(idle), deploy=staticmethod(deploy or default_deploy)))
+                                               launcher_idle=staticmethod(idle), preflight_state=staticmethod(preflight or (lambda: None)), deploy=staticmethod(deploy or default_deploy)))
         def run_pipeline(base, run):
             return module.pipeline(base, run, self.inspector, lambda *_: True, probe=PASSING)
         state = module.automatic(self.base, self.run, 1000.0, now=lambda: 1000.0 + consent_age, pipeline_run=pipeline_run or run_pipeline,
-                                 installer=installer, sleep=sleeps.append, alert=alerts.append, checkout=self.base)
+                                 installer=installer, sleep=sleeps.append, alert=alert or alerts.append, checkout=self.base)
         return state, alerts, sleeps, calls
 
     def test_automatic_response_installs_after_launcher_closes(self):
@@ -215,6 +253,69 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(json.loads((self.run / 'RESULT.json').read_text())['phase'], 'installed')
         self.assertTrue(state['pinSync'].startswith('skipped'))  # the fixture checkout is not a git repository
         self.assertNotIn(state['reviewID'], (self.base / 'Sources/AppTrial.swift').read_text())
+
+    def test_current_code_with_installed_pins_reaches_main_automatic_path(self):
+        deployed = Path(self.temp.name) / 'deployed'
+        shutil.copytree(self.base / 'Sources', deployed / 'Sources')
+        module.stage_pins(deployed, report(), 'work-update-' + 'a' * 32)
+        (self.base / 'scripts/check.sh').write_text('current optimized checks')
+        trial = self.base / 'Sources/AppTrial.swift'
+        trial.write_text(trial.read_text() + '// keep local code\n')
+        original = trial.read_bytes()
+        (self.base / '.build').mkdir()
+        self.base = self.base.resolve()
+        deployed = deployed.resolve()
+        reached = []
+        def automatic(source, run, *_):
+            reached.append(source)
+            self.assertEqual(module.pin_block(source), module.pin_block(deployed))
+            self.assertEqual((source / 'scripts/check.sh').read_text(), 'current optimized checks')
+            self.assertTrue((source / 'Sources/AppTrial.swift').read_text().endswith('// keep local code\n'))
+            return {'phase': 'unchanged'}
+        mask = os.umask(0o077)
+        try:
+            with patch.object(module, 'BASE', self.base), patch.object(module, 'deployed_source', return_value=deployed), \
+                 patch.object(module, 'automatic', side_effect=automatic), patch.object(module, 'show_progress'), \
+                 patch.object(module.sys, 'argv', ['update-work.py', '--auto', '--consented-at', '1000']):
+                self.assertEqual(module.main(), 0)
+        finally:
+            os.umask(mask)
+        self.assertEqual(len(reached), 1)
+        self.assertEqual(trial.read_bytes(), original)
+
+    def test_notifications_cannot_abort_or_reclassify_installation(self):
+        def unavailable(_): raise subprocess.TimeoutExpired('synthetic notification', 30)
+        state, _, _, calls = self.automatic(alert=unavailable)
+        self.assertEqual(state['phase'], 'installed')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads((self.run / 'RESULT.json').read_text())['phase'], 'installed')
+        with patch.object(module.subprocess, 'run', side_effect=OSError('unavailable')):
+            module.notify('synthetic')
+        viewer = self.base / '.build/codex-split-update-progress'
+        viewer.parent.mkdir(); viewer.write_text('not executable')
+        with patch.object(module, 'BASE', self.base), patch.object(module.subprocess, 'Popen', side_effect=OSError('unavailable')):
+            module.show_progress(self.run)
+
+    def test_preflight_blocker_prevents_building(self):
+        def refused(): raise RuntimeError('미해결 업무 실행 존재')
+        state, _, _, calls = self.automatic(preflight=refused, pipeline_run=lambda *_: self.fail('must not build'))
+        self.assertEqual(state['phase'], 'blocked-preflight')
+        self.assertEqual(calls, [])
+        self.assertEqual(self.calls, 0)
+
+    def test_partial_publication_is_not_retried_or_reported_as_untouched(self):
+        attempts = []
+        def partial(*_):
+            attempts.append(True)
+            error = RuntimeError('런처 실행 중')
+            error.replacement_receipt = '/synthetic/RESULT.json'
+            error.replacement_backup = '/synthetic/previous.app'
+            raise error
+        state, alerts, _, _ = self.automatic(deploy=partial)
+        self.assertEqual(state['phase'], 'recovery-required')
+        self.assertEqual(state['receipt'], '/synthetic/RESULT.json')
+        self.assertNotIn('그대로', alerts[-1])
+        self.assertEqual(len(attempts), 1)
 
     def test_sync_pins_commits_only_the_pin_block_as_head_author(self):
         noreply = 'someone@users.noreply.github.com'

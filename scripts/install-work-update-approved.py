@@ -41,7 +41,7 @@ def unique_object(pairs):
     return result
 
 
-def candidate(root, base=BASE):
+def candidate(root, base=BASE, recovery=False):
     """The checkout itself (launcher-only) or an update-work.py candidate awaiting review."""
     root = Path(root)
     require(root.resolve() == root and root.is_dir() and not root.is_symlink(), '후보 경로 불일치')
@@ -51,7 +51,8 @@ def candidate(root, base=BASE):
     require(root.name == 'candidate' and run.parent == base / '.build/work-updates'
             and re.fullmatch(r'[0-9a-f]{32}', run.name) is not None, '승인 가능한 후보 위치 아님')
     result = json.loads((run / 'RESULT.json').read_bytes(), object_pairs_hook=unique_object)
-    require(result.get('phase') == 'awaiting-compatibility-review' and result.get('liveTransitionPerformed') is False
+    phases = ('awaiting-compatibility-review', 'blocked-install', 'recovery-required') if recovery else ('awaiting-compatibility-review',)
+    require(result.get('phase') in phases and result.get('liveTransitionPerformed') is False
             and re.fullmatch(r'work-update-[0-9a-f]{32}', result.get('reviewID', '')) is not None
             and result.get('candidateLauncher') == str(root / '.build/CodexSplit-work-standalone.app'), '검토 대기 후보 아님')
     trial = (root / 'Sources/AppTrial.swift').read_text()
@@ -164,6 +165,21 @@ def continuity(info, daily, saved, installed_launcher):
         require(all(expected[field] == plan[field] for field in PIN_FIELDS), '후보의 검토 edge가 현재 업무 구간 버전에서 시작하지 않음')
 
 
+def preflight_state(destination=DESTINATION, control=CONTROL, check_idle=launcher_idle):
+    """Reject existing blockers before compiling; deployment still repeats every check."""
+    check_idle()
+    control_baseline(control)
+    lock = os.open(control / 'state.lock', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        check_idle()
+        _, daily, saved = control_baseline(control)
+        old = replacement.manifest(destination)
+        continuity({'reviewID': None}, daily, saved, old['Contents/MacOS/launcher'][0])
+    finally:
+        os.close(lock)
+
+
 def bind(workspace, review_id, mode, launcher_sha, to_manifest_sha, review_bytes):
     # Read by the launcher before it offers a new acceptance segment; exclusive, private files.
     # UPDATE.json is written last: without it the launcher offers nothing.
@@ -171,10 +187,12 @@ def bind(workspace, review_id, mode, launcher_sha, to_manifest_sha, review_bytes
                          'reviewSHA256': hashlib.sha256(review_bytes).hexdigest()}, indent=2) + '\n'
     files = [] if (workspace / 'REVIEW.json').exists() else [('REVIEW.json', review_bytes)]
     for name, data in files + [('UPDATE.json', update.encode())]:
-        fd = os.open(workspace / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        temporary = workspace / ('binding-' + uuid.uuid4().hex + '.tmp')
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'wb') as out:
             out.write(data); out.flush(); os.fsync(out.fileno())
-    replacement.sync_directory(workspace)
+        replacement.rename_exclusive(temporary, workspace / name)
+        replacement.sync_directory(workspace)
 
 
 def deploy(source_root, review_path, from_sha, to_sha, install, destination=DESTINATION, control=CONTROL,
@@ -207,7 +225,12 @@ def deploy(source_root, review_path, from_sha, to_sha, install, destination=DEST
             return {'phase': 'preflight', 'reviewID': info['reviewID'], 'directoryStatus': directory_baseline['status']}
         record = replacement.replace(bundle, destination, old, new, from_sha, to_sha, verify_signature, check_idle, preflight)
         workspace = Path(record['backup']).parent
-        bind(workspace, info['reviewID'], mode, new['Contents/MacOS/launcher'][0], to_sha, review_bytes)
+        try:
+            bind(workspace, info['reviewID'], mode, new['Contents/MacOS/launcher'][0], to_sha, review_bytes)
+        except Exception as error:
+            error.replacement_receipt = str(workspace / 'RESULT.json')
+            error.replacement_backup = record['backup']
+            raise
         return {'phase': 'installed', 'receipt': str(workspace / 'RESULT.json'), 'backup': record['backup'], 'reviewID': info['reviewID']}
     finally:
         os.close(lock)
@@ -216,14 +239,30 @@ def deploy(source_root, review_path, from_sha, to_sha, install, destination=DEST
 def rebind(receipt, source_root, review_path, destination=DESTINATION, verify_signature=replacement.signed, base=BASE):
     receipt = Path(receipt)
     record = json.loads(receipt.read_bytes(), object_pairs_hook=unique_object)
-    info = candidate(source_root, base)
+    info = candidate(source_root, base, recovery=True)
     proof = replacement.verify_receipt(receipt, destination, record['fromManifestSHA256'], record['toManifestSHA256'], verify_signature)
     require(proof['newManifest'] == replacement.manifest(info['root'] / '.build/CodexSplit-work-standalone.app'), '영수증과 후보 불일치')
-    require(not (receipt.parent / 'UPDATE.json').exists(), 'binding 이미 존재')
     review_bytes, mode = review(review_path, info['reviewID'], proof['toManifestSHA256'])
     if (receipt.parent / 'REVIEW.json').exists():  # an interrupted bind leaves only the identical review copy
         require((receipt.parent / 'REVIEW.json').read_bytes() == review_bytes, '기존 검토 사본 불일치')
-    bind(receipt.parent, info['reviewID'], mode, proof['newManifest']['Contents/MacOS/launcher'][0], proof['toManifestSHA256'], review_bytes)
+    binding = receipt.parent / 'UPDATE.json'
+    if binding.exists():
+        # A completed binding may precede a failed run-status write; verify before retrying that write.
+        require(info['reviewID'] is not None, 'binding 이미 존재')
+        replacement.safe(binding, private=True)
+        expected = {'schemaVersion': 1, 'reviewID': info['reviewID'], 'mode': mode,
+                    'launcherSHA256': proof['newManifest']['Contents/MacOS/launcher'][0],
+                    'toManifestSHA256': proof['toManifestSHA256'], 'reviewSHA256': hashlib.sha256(review_bytes).hexdigest()}
+        require(json.loads(binding.read_bytes(), object_pairs_hook=unique_object) == expected, '기존 binding 불일치')
+    else:
+        bind(receipt.parent, info['reviewID'], mode, proof['newManifest']['Contents/MacOS/launcher'][0], proof['toManifestSHA256'], review_bytes)
+    if info['reviewID'] is not None:
+        result_path = info['root'].parent / 'RESULT.json'
+        state = json.loads(result_path.read_bytes(), object_pairs_hook=unique_object)
+        state.update(phase='installed', receipt=str(receipt), backup=proof['backup'], remaining=[])
+        for key in ('errorType', 'errorMessage'):
+            state.pop(key, None)
+        replacement.journal(result_path, state)
 
 
 def restore(receipt, destination=DESTINATION, control=CONTROL, verify_signature=replacement.signed, check_idle=launcher_idle):

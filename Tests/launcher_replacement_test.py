@@ -24,6 +24,14 @@ class ReplaceTests(unittest.TestCase):
         self.assertEqual(self.m.manifest(self.dest),self.new)
         self.assertEqual(self.m.manifest(Path(result['backup'])),self.old)
         self.assertEqual(result['phase'],'verified')
+    def test_partial_failure_exposes_journal_for_recovery(self):
+        def interrupted(phase):
+            if phase == 'oldMoved': raise RuntimeError('synthetic interruption')
+        with self.assertRaises(RuntimeError) as caught:
+            self.run_replace(checkpoint=interrupted)
+        self.assertTrue(Path(caught.exception.replacement_receipt).is_file())
+        self.assertEqual(self.m.manifest(Path(caught.exception.replacement_backup)), self.old)
+        self.assertFalse(self.dest.exists())
     def test_old_change_blocks(self):
         (self.dest/'launcher').write_text('different')
         with self.assertRaises(RuntimeError): self.run_replace()

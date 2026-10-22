@@ -9,7 +9,7 @@ mkdir -p .build/module-cache .test-data
 . scripts/sources.sh
 swift_check() { # name, test entry, extra sources...
     name=$1; entry=$2; shift 2
-    xcrun swiftc -module-cache-path "$PWD/.build/module-cache" -import-objc-header Sources/Native.h .build/Native.o $SWIFT_LIBRARY "$@" "$entry" -o ".build/$name"
+    xcrun swiftc -whole-module-optimization -Onone -module-cache-path "$PWD/.build/module-cache" -import-objc-header Sources/Native.h .build/Native.o $SWIFT_LIBRARY "$@" "$entry" -o ".build/$name"
 }
 python3 Tests/harness_ownership_test.py
 python3 Tests/install_work.py

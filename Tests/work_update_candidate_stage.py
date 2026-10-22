@@ -20,7 +20,7 @@ class CandidateStageTests(unittest.TestCase):
             report = dict(observed=dict(app=binary, cli=cli, resourcesSHA256='f' * 64))
             update.stage_pins(candidate, copy.deepcopy(report), 'work-update-' + '9' * 32)
             output = candidate / 'candidate-check'
-            subprocess.run(['xcrun', 'swiftc', '-module-cache-path', str(ROOT / '.build/module-cache'), '-import-objc-header',
+            subprocess.run(['xcrun', 'swiftc', '-whole-module-optimization', '-Onone', '-module-cache-path', str(ROOT / '.build/module-cache'), '-import-objc-header',
                             str(ROOT / 'Sources/Native.h'), str(ROOT / '.build/Native.o')]
                            + [str(candidate / 'Sources' / (name + '.swift')) for name in SOURCES]
                            + [str(ROOT / 'Tests/work-update-candidate/main.swift'), '-o', str(output)], check=True)

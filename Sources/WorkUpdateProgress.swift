@@ -13,6 +13,8 @@ struct WorkUpdateProgress: Equatable {
         switch phase {
         case "installed":
             return Self(step: 5, text: "완료: 업무 런처를 교체했습니다. 런처를 열어 새 구간을 시작하세요.", finished: true)
+        case "recovery-required":
+            return Self(step: 5, text: "교체 도중 중단되어 복구가 필요합니다. 실행 기록과 교체 영수증을 확인하세요. 업무 기록은 보존됩니다.", finished: true)
         case "unchanged":
             return Self(step: 5, text: "공식 앱이 고정 버전과 같아 할 일이 없습니다." + kept, finished: true)
         case let phase? where phase.hasPrefix("blocked"):
@@ -20,8 +22,10 @@ struct WorkUpdateProgress: Equatable {
         default: break
         }
         // The run writes its result before it exits; anything else means it ended without one.
-        guard runnerAlive else { return Self(step: 5, text: "자동 대응이 결과 기록 없이 끝났습니다." + kept, finished: true) }
+        guard runnerAlive else { return Self(step: 5, text: "자동 대응이 결과 기록 없이 끝났습니다. 설치 상태는 실행 기록과 교체 영수증을 확인하세요.", finished: true) }
         switch phase {
+        case "preflight":
+            return Self(step: 1, text: "빌드 전 업무 기록과 설치 상태 확인 중", finished: false)
         case "testing":
             return Self(step: 2, text: "후보 런처 빌드와 전체 시험 중 (몇 분 걸립니다)" + (lastCheck.map { "\n최근: " + $0 } ?? ""), finished: false)
         case "awaiting-compatibility-review" where !reviewWritten:

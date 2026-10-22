@@ -46,9 +46,28 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def inspect(base):
+def checker_inputs(base):
+    paths = sorted((base / 'Sources').rglob('*')) + [base / 'scripts/build.sh', base / 'scripts/sources.sh']
+    require(not any(path.is_symlink() for path in paths), '검사 소스 symlink는 허용하지 않음')
+    return {str(path.relative_to(base)): digest(path) for path in paths if path.is_file()}
+
+
+def inspect(base, build_cache=None):
+    # Reuse only within this pipeline, and only while both inputs and executable still match.
     executable = base / '.build/codex-split'
-    require(executable.is_file() and not executable.is_symlink(), '먼저 sh scripts/build.sh를 실행하세요.')
+    inputs = checker_inputs(base)
+    cached = build_cache.get(str(base)) if build_cache is not None else None
+    if not (cached and cached[0] == inputs and executable.is_file() and not executable.is_symlink()
+            and cached[1] == digest(executable)):
+        if build_cache is not None:
+            build_cache.pop(str(base), None)
+        built = subprocess.run(['/bin/sh', 'scripts/build.sh', '--checker-only'], cwd=base,
+                               capture_output=True, timeout=180, check=False)
+        require(built.returncode == 0, '업데이트 검사 도구 빌드 실패')
+        require(executable.is_file() and not executable.is_symlink(), '먼저 sh scripts/build.sh를 실행하세요.')
+        require(checker_inputs(base) == inputs, '빌드 중 검사 소스 변경')
+        if build_cache is not None:
+            build_cache[str(base)] = (inputs, digest(executable))
     result = subprocess.run([str(executable), 'update-check', 'work', '--json'],
                             capture_output=True, timeout=180, check=False)
     require(result.returncode in (0, 2), '업데이트 검사 실행 실패')
@@ -234,16 +253,23 @@ def isolation_markers(bundle):
 
 def notify(message):
     # Best effort; the RESULT.json phase is the record.
-    subprocess.run(['/usr/bin/osascript', '-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title "CodexSplit 업무용"',
-                    '-e', 'end run', message], capture_output=True, timeout=30, check=False)
+    try:
+        subprocess.run(['/usr/bin/osascript', '-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title "CodexSplit 업무용"',
+                        '-e', 'end run', message], capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass  # Notification delivery cannot change the installation result.
+
 
 
 def show_progress(run):
     # Read-only window over this run (RESULT.json, checks.log); closing it never affects the run. Best effort.
     viewer = BASE / '.build/codex-split-update-progress'
     if viewer.is_file():
-        subprocess.Popen([str(viewer), str(run)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            subprocess.Popen([str(viewer), str(run)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass  # The read-only progress window is optional.
 
 
 def automatic_review(state, report, isolation, consented_at, to_manifest_sha):
@@ -276,6 +302,9 @@ def wait_idle(idle, sleep, seconds=600):
 
 
 def pipeline(base, run, inspector=inspect, checks=run_checks, probe=isolation_markers):
+    if inspector is inspect:
+        build_cache = {}
+        inspector = lambda root: inspect(root, build_cache)
     state = {'schemaVersion': 1, 'phase': 'inspecting', 'liveTransitionPerformed': False,
              'profileModified': False, 'launchPermitted': False}
     result_path = run / 'RESULT.json'
@@ -332,9 +361,7 @@ INSTALLED_LAUNCHER = HOME / 'Applications/CodexSplit-work.app/Contents/MacOS/lau
 
 
 def deployed_source(base, runs, installed=INSTALLED_LAUNCHER):
-    """Stage from the candidate that built the installed launcher, so each candidate's pin history
-    continues from the deployed one, unless the checkout carries the same pins (synced after an update):
-    then the checkout itself, so its later changes ship. Installation re-checks continuity."""
+    """Locate the installed pin history; prepare_source keeps code from the current checkout."""
     if not installed.is_file():
         return base
     launcher = digest(installed)
@@ -347,6 +374,19 @@ def deployed_source(base, runs, installed=INSTALLED_LAUNCHER):
     if not matches:
         return base
     return base if pin_block(base) == pin_block(matches[0]) else matches[0]
+
+
+
+def prepare_source(base, deployed, run):
+    """Keep current code; transplant only the installed pin history into an isolated baseline."""
+    if deployed == base:
+        return base
+    source = run / 'baseline'
+    snapshot_source(base, source)
+    trial = source / 'Sources/AppTrial.swift'
+    text, start, end, _, _ = read_pins(trial)
+    trial.write_text(text[:start] + pin_block(deployed) + text[end:])
+    return source
 
 
 def sync_pins(checkout, candidate, review_id):
@@ -390,17 +430,36 @@ def load_installer(base):
 def automatic(base, run, consented_at, now=None, pipeline_run=pipeline, installer=None, sleep=None, alert=notify, checkout=BASE):
     """Launcher-consented response: candidate, checks, then a backed-up replacement. Never a new segment."""
     import time
+    deliver = alert
+    def inform(message):
+        try:
+            deliver(message)
+        except (OSError, subprocess.SubprocessError):
+            pass  # An optional notification must never abort or reclassify the run.
     require(0 <= (now or time.time)() - consented_at < 120, '자동 대응 동의 만료')
     # The installer always comes from the operational checkout: candidates live in its .build/work-updates.
     installer, sleep = installer or load_installer(BASE), sleep or time.sleep
-    alert('업무 런처 업데이트 대응을 시작했습니다. 검사·빌드에 10분 안팎이 걸립니다.')
+    inform('업무 런처 업데이트 대응을 시작했습니다. 사전 확인 후 후보 빌드와 전체 검사를 진행합니다.')
+    state = {'schemaVersion': 1, 'phase': 'preflight', 'liveTransitionPerformed': False,
+             'profileModified': False, 'launchPermitted': False}
+    write_json(run / 'RESULT.json', state)
+    try:
+        wait_idle(installer.launcher_idle, sleep)
+        installer.preflight_state()
+    except (RuntimeError, OSError) as error:
+        state.update(phase='blocked-preflight', errorType=type(error).__name__)
+        if isinstance(error, RuntimeError):
+            state['errorMessage'] = str(error)
+        write_json(run / 'RESULT.json', state)
+        inform('빌드 전 사전 확인에서 중단했습니다: ' + state.get('errorMessage', state['errorType']))
+        return state
     try:
         state = pipeline_run(base, run)
     except Exception:
-        alert('업무 런처 업데이트 대응이 중단됐습니다. 업무 기록과 기존 런처는 그대로입니다.')
+        inform('업무 런처 업데이트 대응이 중단됐습니다. 업무 기록과 기존 런처는 그대로입니다.')
         raise
     if state['phase'] != 'awaiting-compatibility-review':
-        alert('업무 런처 업데이트 대응 중단: ' + state['phase'] + '. 업무 기록과 기존 런처는 그대로입니다.')
+        inform('업무 런처 업데이트 대응 중단: ' + state['phase'] + '. 업무 기록과 기존 런처는 그대로입니다.')
         return state
     try:
         candidate = run / 'candidate'
@@ -414,7 +473,7 @@ def automatic(base, run, consented_at, now=None, pipeline_run=pipeline, installe
                 installed = installer.deploy(candidate, run / 'REVIEW.json', digest_of(installer.DESTINATION), to_sha, True)
                 break
             except RuntimeError as error:
-                if attempt == 2 or '런처 실행 중' not in str(error):
+                if attempt == 2 or hasattr(error, 'replacement_receipt') or '런처 실행 중' not in str(error):
                     raise
         state.update(phase='installed', receipt=installed['receipt'], backup=installed['backup'])
         try:  # the replacement is done; a failed sync only leaves the checkout as it was
@@ -423,15 +482,22 @@ def automatic(base, run, consented_at, now=None, pipeline_run=pipeline, installe
             state['pinSync'] = 'skipped: ' + (str(error) if isinstance(error, RuntimeError) else type(error).__name__)
         write_json(run / 'RESULT.json', state)
         synced = state['pinSync'] in ('committed', 'already')
-        alert('업무 런처를 새 버전용으로 교체했습니다. ' + ('' if synced else '원본 폴더 고정값은 맞추지 못했습니다(RESULT.json pinSync). ')
+        inform('업무 런처를 새 버전용으로 교체했습니다. ' + ('' if synced else '원본 폴더 고정값은 맞추지 못했습니다(RESULT.json pinSync). ')
               + '런처를 열어 새 구간을 시작하세요.')
     except Exception as error:
-        state['phase'] = 'blocked-install'
+        receipt = getattr(error, 'replacement_receipt', state.get('receipt'))
+        state['phase'] = 'recovery-required' if receipt else 'blocked-install'
+        if receipt:
+            state['receipt'] = receipt
+            state['backup'] = getattr(error, 'replacement_backup', state.get('backup'))
         state['errorType'] = type(error).__name__
         if isinstance(error, RuntimeError):
             state['errorMessage'] = str(error)
         write_json(run / 'RESULT.json', state)
-        alert('업무 런처 교체를 하지 않았습니다(' + state.get('errorMessage', state['errorType']) + '). 기존 런처와 업무 기록은 그대로입니다.')
+        if receipt:
+            inform('업무 런처 교체 도중 복구가 필요합니다. 설치 상태를 추정하지 말고 영수증을 확인하세요: ' + receipt)
+        else:
+            inform('업무 런처 교체를 하지 않았습니다(' + state.get('errorMessage', state['errorType']) + '). 기존 런처와 업무 기록은 그대로입니다.')
     return state
 
 
@@ -465,7 +531,7 @@ def main():
         print('자동 검사·후보 빌드 기록: ' + str(run), flush=True)
         if options.auto:
             show_progress(run)
-        source = deployed_source(BASE, runs)
+        source = prepare_source(BASE, deployed_source(BASE, runs), run)
         print('후보 원본 소스: ' + str(source), flush=True)
         state = automatic(source, run, options.consented_at) if options.auto else pipeline(source, run)
         print('결과: ' + state['phase'])
@@ -479,8 +545,8 @@ if __name__ == '__main__':
     try:
         sys.exit(main())
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        print('업데이트 자동 검증 중단. 기존 앱과 업무 기록을 유지합니다.', file=sys.stderr)
+        print('업데이트 자동 검증 중단. 설치 상태는 실행 기록과 교체 영수증을 확인하세요.', file=sys.stderr)
         if '--auto' in sys.argv:  # the launcher promised a notification even for early failures
             notify('업무 런처 업데이트 대응을 시작하지 못했거나 중단됐습니다(' + (str(error) if isinstance(error, RuntimeError) else type(error).__name__)
-                   + '). 업무 기록과 기존 런처는 그대로입니다.')
+                   + '). 설치 상태는 실행 기록과 교체 영수증을 확인하세요.')
         sys.exit(2)

@@ -1,5 +1,6 @@
 """Update deployment on fixture directories only: no installed launcher, official app or work profile."""
 import hashlib, importlib.util, json, os, stat, tempfile, unittest
+from unittest.mock import patch
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / 'scripts/install-work-update-approved.py'
@@ -301,6 +302,78 @@ class InstallTests(unittest.TestCase):
         self.assertFalse((receipt.parent / 'UPDATE.json').exists())
         m.rebind(receipt, self.base, self.review_path, destination=self.destination, verify_signature=lambda p: None, base=self.base)
         self.assertEqual(json.loads((receipt.parent / 'UPDATE.json').read_text())['launcherSHA256'], hashlib.sha256(b'new').hexdigest())
+
+    def test_automatic_binding_failure_recovers_with_verified_receipt(self):
+        update = m.load('automatic_recovery', SOURCE.parent / 'update-work.py')
+        root = self.candidate()
+        self.review(review_id='work-update-' + 'a' * 32, mode='automatic')
+        run = root.parent
+        for name in ('final-inspection.json', 'isolation.json'):
+            (run / name).write_text('{}')
+        initial = json.loads((run / 'RESULT.json').read_text())
+        approved = json.loads(self.review_path.read_text())
+        def pipeline(*_):
+            (run / 'RESULT.json').write_text(json.dumps(initial))
+            return initial
+        def deploy(candidate, review, *_):
+            self.review_path = review
+            return self.deploy(root=candidate)
+        adapter = type('Installer', (), dict(replacement=m.replacement, DESTINATION=self.destination,
+            launcher_idle=staticmethod(lambda: None),
+            preflight_state=staticmethod(lambda: m.preflight_state(self.destination, self.control, lambda: None)),
+            deploy=staticmethod(deploy)))
+        with patch.object(update, 'automatic_review', return_value=approved), \
+             patch.object(m, 'bind', side_effect=OSError('synthetic binding failure')):
+            state = update.automatic(self.base, run, 1000, now=lambda: 1000, installer=adapter,
+                                     pipeline_run=pipeline, alert=lambda _: None, checkout=self.base)
+        self.assertEqual(state['phase'], 'recovery-required', state)
+        self.assertEqual(m.replacement.manifest(self.destination), self.new)
+        self.assertEqual(json.loads(Path(state['receipt']).read_text())['phase'], 'verified')
+        with self.assertRaises(RuntimeError):  # recovery eligibility never authorizes another deployment
+            m.candidate(root, self.base)
+        (self.destination / 'Contents/MacOS/launcher').write_text('tampered')
+        with self.assertRaises(RuntimeError):
+            m.rebind(state['receipt'], root, self.review_path, destination=self.destination,
+                     verify_signature=lambda _: None, base=self.base)
+        (self.destination / 'Contents/MacOS/launcher').write_text('new')
+        with patch.object(m.replacement, 'journal', side_effect=OSError('synthetic result write failure')):
+            with self.assertRaises(OSError):
+                m.rebind(state['receipt'], root, self.review_path, destination=self.destination,
+                         verify_signature=lambda _: None, base=self.base)
+        # Binding succeeded, but the run state still needs recovery. Retrying checks the binding too.
+        m.rebind(state['receipt'], root, self.review_path, destination=self.destination,
+                 verify_signature=lambda _: None, base=self.base)
+        self.assertTrue((Path(state['receipt']).parent / 'UPDATE.json').is_file())
+        self.assertEqual(json.loads((run / 'RESULT.json').read_text())['phase'], 'installed')
+
+    def test_early_preflight_preserves_records_and_rejects_blockers(self):
+        before = {p.name: p.read_bytes() for p in self.control.iterdir()}
+        m.preflight_state(self.destination, self.control, lambda: None)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.control.iterdir()})
+        self.assert_untouched()
+        for change in ({'phase': 'reserved'}, {'account': 'mismatch'}, {'toolFingerprint': 'f' * 64}):
+            attempt = dict(phase='exitObserved', plan=PLAN, toolFingerprint=OLD_TOOL)
+            attempt.update(change)
+            self.daily({'schemaVersion': 2, 'attempts': [attempt]})
+            with self.assertRaises(RuntimeError):
+                m.preflight_state(self.destination, self.control, lambda: None)
+
+    def test_deployment_rechecks_after_successful_early_preflight(self):
+        m.preflight_state(self.destination, self.control, lambda: None)
+        self.daily({'schemaVersion': 2, 'attempts': [{'phase': 'reserved', 'plan': PLAN, 'toolFingerprint': OLD_TOOL}]})
+        with self.assertRaisesRegex(RuntimeError, '미해결 업무 실행'):
+            self.deploy()
+        self.assert_untouched()
+
+    def test_binding_write_failure_leaves_no_partial_final_file(self):
+        workspace = self.base / 'binding'; workspace.mkdir()
+        with patch.object(m.os, 'fsync', side_effect=OSError('synthetic disk error')):
+            with self.assertRaises(OSError):
+                m.bind(workspace, None, 'reviewed', 'a' * 64, 'b' * 64, b'review')
+        self.assertFalse((workspace / 'REVIEW.json').exists())
+        self.assertFalse((workspace / 'UPDATE.json').exists())
+        m.bind(workspace, None, 'reviewed', 'a' * 64, 'b' * 64, b'review')
+        self.assertTrue((workspace / 'UPDATE.json').exists())
 
     def test_restore_before_transition_only(self):
         result = self.deploy()

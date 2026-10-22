@@ -13,7 +13,7 @@ test ! -L "$bundle/Contents/MacOS"
 test ! -L "$bundle/Contents/Resources"
 test ! -L "$bundle/Contents/MacOS/launcher"
 xcrun clang -Wall -Wextra -Werror -c Sources/Native.c -o .build/Native.o
-xcrun swiftc -module-cache-path "$PWD/.build/module-cache" -import-objc-header Sources/Native.h .build/Native.o $SWIFT_LIBRARY Sources/WorkDailyUI.swift -o "$bundle/Contents/MacOS/launcher"
+xcrun swiftc -whole-module-optimization -Onone -module-cache-path "$PWD/.build/module-cache" -import-objc-header Sources/Native.h .build/Native.o $SWIFT_LIBRARY Sources/WorkDailyUI.swift -o "$bundle/Contents/MacOS/launcher"
 # The checkout the launcher may stage update candidates from. Candidates built by
 # scripts/update-work.py keep pointing at the operational checkout.
 source_root="${CODEXSPLIT_SOURCE_ROOT:-$(pwd -P)}"

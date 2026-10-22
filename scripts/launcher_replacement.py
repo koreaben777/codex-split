@@ -64,23 +64,30 @@ def replace(source,destination,old_manifest,new_manifest,old_manifest_sha,new_ma
             'oldManifest':old_manifest,'newManifest':new_manifest,'stateTransitionPerformed':False,
             'fromManifestSHA256':old_manifest_sha,'toManifestSHA256':new_manifest_sha}
     result=workspace/'RESULT.json'
-    journal(result,record)
-    shutil.copytree(source,staged,copy_function=shutil.copy2)
-    require(manifest(staged)==new_manifest,'staging 복사 불일치')
-    verify_signature(staged);sync_bundle(staged)
-    record['phase']='staged';journal(result,record);checkpoint('staged')
-    check_idle();preflight()
-    require(manifest(source)==new_manifest and manifest(destination)==old_manifest,'게시 직전 산출물 변경')
-    sync_bundle(destination)
-    rename_exclusive(destination,backup);sync_directory(destination.parent);sync_directory(workspace)
-    require(manifest(backup)==old_manifest,'이전 bundle 보존 불일치')
-    record['phase']='oldMoved';journal(result,record);checkpoint('oldMoved')
-    rename_exclusive(staged,destination);sync_directory(destination.parent);sync_directory(workspace)
-    record['phase']='published';journal(result,record);checkpoint('published')
-    require(manifest(destination)==new_manifest and manifest(backup)==old_manifest,'게시 후 산출물 불일치')
-    verify_signature(destination);preflight()
-    record['phase']='verified';journal(result,record)
-    return record
+    try:
+        journal(result,record)
+        shutil.copytree(source,staged,copy_function=shutil.copy2)
+        require(manifest(staged)==new_manifest,'staging 복사 불일치')
+        verify_signature(staged);sync_bundle(staged)
+        record['phase']='staged';journal(result,record);checkpoint('staged')
+        check_idle();preflight()
+        require(manifest(source)==new_manifest and manifest(destination)==old_manifest,'게시 직전 산출물 변경')
+        sync_bundle(destination)
+        rename_exclusive(destination,backup);sync_directory(destination.parent);sync_directory(workspace)
+        require(manifest(backup)==old_manifest,'이전 bundle 보존 불일치')
+        record['phase']='oldMoved';journal(result,record);checkpoint('oldMoved')
+        rename_exclusive(staged,destination);sync_directory(destination.parent);sync_directory(workspace)
+        record['phase']='published';journal(result,record);checkpoint('published')
+        require(manifest(destination)==new_manifest and manifest(backup)==old_manifest,'게시 후 산출물 불일치')
+        verify_signature(destination);preflight()
+        record['phase']='verified';journal(result,record)
+        return record
+    except Exception as error:
+        # Preserve the journal location even if publication or binding cannot finish.
+        error.replacement_receipt = str(result)
+        error.replacement_backup = str(backup)
+        raise
+
 
 def unique_object(pairs):
     out={}

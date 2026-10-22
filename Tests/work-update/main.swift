@@ -83,4 +83,7 @@ check(progress("awaiting-compatibility-review", review: true).step == 4 && !prog
 check(progress("installed", alive: false).finished && progress("installed", alive: false).text.hasPrefix("완료"), "progress: installed is final")
 check(progress("blocked-install", alive: false, error: "아이콘").text.contains("blocked-install") && progress("blocked-install", alive: false, error: "아이콘").text.contains("아이콘"), "progress: blocked shows the reason")
 check(progress("testing", alive: false).finished && progress("testing", alive: false).text.contains("결과 기록 없이"), "progress: a run that vanished is reported, not assumed")
+check(progress("recovery-required", alive: false).finished && !progress("recovery-required", alive: false).text.contains("그대로"), "progress: partial publication requires recovery")
+check(!progress(nil, alive: false).text.contains("그대로"), "progress: missing result never claims unchanged installation")
+check(progress("preflight").text.contains("빌드 전"), "progress: early preflight is visible")
 print("Work update checks passed: \(checks)")
