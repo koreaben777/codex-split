@@ -282,7 +282,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             message("업데이트 자동 대응이 이미 진행 중입니다. 완료 알림을 받은 뒤 런처를 다시 여세요. 업무 기록은 그대로입니다.")
             return
         }
-        guard consent(update.summary + "\n\n자동 대응: 서명·pin 재확인, 업무 저장소 분리 표식 정적 점검, 격리 후보 빌드와 전체 시험 뒤 이 런처가 닫혀 있으면 백업을 남기고 런처를 교체합니다. 공식 변경 내역은 사람이 검토하지 않습니다. 교체 뒤 런처를 다시 열면 새 구간이 시작됩니다. 지금 일상 사용 허용이 있으면 첫 업무 창에서 확인 한 번으로 허용이 이어지고, 없으면 수용 시험 두 번과 일상 허용을 받습니다. 교체가 끝날 때까지 업무 앱은 열지 않습니다. 교체 전에 실패하면 기존 런처를 유지합니다. 교체 도중 중단되면 백업과 영수증으로 상태를 확인하고 복구해야 합니다. 업무 기록은 보존됩니다.", action: "자동 대응 시작") else { return }
+        guard consent(update.summary + "\n\n자동 대응: 서명·pin 재확인, 업무 저장소 분리 표식 정적 점검, 격리 후보 빌드와 전체 시험 뒤 이 런처가 닫혀 있으면 백업을 남기고 런처를 교체합니다. 공식 변경 내역은 사람이 검토하지 않습니다. 교체 뒤 런처를 다시 열면 새 구간이 시작됩니다. 지금 일상 사용 허용이 있고 업무 폴더가 그대로면 새 구간 동의 후 바로 일상 사용을 이어갑니다. 확인용 실행·프로젝트 확인·종료 대기는 필요하지 않습니다. 폴더 재연결 시에는 확인 1회, 기존 허용이 없으면 수용 시험 두 번과 일상 허용이 필요합니다. 교체가 끝날 때까지 업무 앱은 열지 않습니다. 교체 전에 실패하면 기존 런처를 유지합니다. 교체 도중 중단되면 백업과 영수증으로 상태를 확인하고 복구해야 합니다. 업무 기록은 보존됩니다.", action: "자동 대응 시작") else { return }
         do {
             try WorkUpdateAutomation.start(consentedAt: Date())
             message("자동 대응을 시작했습니다. 진행 상황은 '업데이트 자동 대응' 창에서 볼 수 있고, 완료나 중단은 알림으로도 알려 드립니다. 이 런처는 닫힙니다.")
@@ -290,7 +290,7 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
             message("자동 대응을 시작하지 못했습니다. 업무 기록과 런처는 그대로입니다.\n" + WorkUpdateGuide.blockedLaunch)
         }
     }
-    // A verified replacement receipt plus consent opens a fresh acceptance segment; it grants nothing by itself.
+    // A verified replacement plus consent directly carries daily use over when directories are unchanged.
     // nil: declined. Inner value: the click time when the predecessor held a grant and the consent also covers
     // opening the first work window.
     private func beginUpdate(_ context: WorkDailyContext) throws -> Date?? {
@@ -311,8 +311,11 @@ private final class WorkDailyDelegate: NSObject, NSApplicationDelegate {
         if rebind {
             change += "\n\n기존 폴더 기록에는 영구 볼륨 ID가 없어 현재 볼륨이 이전과 같은지 자동으로 증명할 수 없습니다. 경로·소유자·권한과 폴더 5곳의 inode를 확인했습니다. 아래 경로가 계속 사용하던 업무 저장소인지 확인하고 동의해 주세요. 동의하면 이전 기록을 그대로 보존하고 현재 볼륨 UUID로 다시 연결합니다. 이후 재부팅으로 장치 번호가 바뀌어도 같은 볼륨·폴더를 인식합니다.\n" + context.plan.root + "\n"
         }
+        let continuation = rebind
+            ? "업무 폴더를 다시 연결하므로 이어서 여는 업무 창에서 메뉴 막대 `업무 확인`으로 계정·개인 앱·프로젝트를 확인하고, 업무를 마친 뒤 Cmd-Q로 닫아 정상 종료가 관측되면 일상 사용 허용이 이어집니다."
+            : "기존 일상 사용 허용과 동일한 업무 폴더를 확인했습니다. 새 버전·런처에 일상 사용 허용을 이어서 발급하고 바로 업무 창을 엽니다. 확인용 실행·프로젝트 수동 확인·정상 종료 대기는 필요하지 않습니다."
         let accepted = carry
-            ? consent(change + " 이전 업무 기록은 변경 없이 보존하고 새 구간을 시작합니다. 직전 구간에서 일상 사용이 허용됐거나 그 확인을 마쳤으므로, 이어서 여는 업무 창에서 메뉴 막대 `업무 확인`으로 계정·개인 앱·프로젝트를 한 번 확인하고 그 창을 Cmd-Q로 닫아 정상 종료가 관측되면 일상 사용 허용이 이어집니다. 확인 결과가 다르면 실행을 막고 기록을 보존합니다. 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있으며, 완전한 인증 분리는 보장하지 않습니다.", action: "새 구간 시작·업무 창 열기")
+            ? consent(change + " 이전 업무 기록은 변경 없이 보존하고 새 구간을 시작합니다. " + continuation + " 앱 초기화는 업무 데이터 갱신·네트워크·공유 OS 인증 저장소 접근과 개인 앱 영향을 일으킬 수 있으며, 완전한 인증 분리는 보장하지 않습니다.", action: "새 구간 시작·업무 창 열기")
             : consent(change + " 이전 업무 기록은 변경 없이 보존하고 이 런처·버전은 성공 0회에서 다시 시작합니다. 업무 창 열기·계정/개인 앱/프로젝트 확인·정상 종료 수용 시험 두 번과 별도의 일상 사용 허용이 다시 필요합니다. 이전 성공이나 허용은 이어지지 않습니다. 이 동의만으로 앱을 열지는 않습니다.", action: "새 수용 구간 시작")
         guard accepted else { return nil }
         let clickedAt = Date()

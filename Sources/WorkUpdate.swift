@@ -183,7 +183,7 @@ struct WorkUpdateReviewPlan: Encodable {
             ReviewItem(id: "identity", requirement: "report.observed의 앱·CLI·리소스 해시와 서명; 바뀌면 새 후보 필요"),
             ReviewItem(id: "storage-auth-ipc", requirement: "저장 구조·인증·IPC 변경과 업무/개인 프로필 영향"),
             ReviewItem(id: "preservation-recovery", requirement: "백업·영수증 보존과 전환 전 복원 방법"),
-            ReviewItem(id: "trial-consent", requirement: "교체 뒤 새 구간 확인(직전 일상 허용이 있으면 확인 1회로 허용 재발급, 없으면 수용 시험 두 번과 별도 일상 허용)에 대한 동의")
+            ReviewItem(id: "trial-consent", requirement: "교체 뒤 새 구간 확인(직전 일상 허용과 동일한 업무 폴더면 확인 방문 없이 허용 재발급, 폴더 재연결 시 확인 1회, 허용이 없으면 수용 시험 두 번과 별도 일상 허용)에 대한 동의")
         ]
     }
 }

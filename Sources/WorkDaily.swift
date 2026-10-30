@@ -140,7 +140,8 @@ struct WorkDailyGrant: Codable {
 // Starts a new acceptance segment after a verified launcher replacement. No visit is
 // inherited: the predecessor stays byte-for-byte in an immutable archive. A new launcher/
 // version needs two acceptance visits and a separate daily-use grant, unless the predecessor
-// held a grant (carryOver): then one accepted visit re-issues it, consented at segment start.
+// held a grant: unchanged directories allow direct re-issue at segment consent. Older carry-over
+// records and directory rebindings keep their one-visit acceptance requirement.
 struct WorkDailyUpdateTransition: Codable {
     let reviewID: String? // nil only when the official target is unchanged (launcher-only replacement)
     let setupPlan: AppInitialTrialPlan
@@ -154,6 +155,7 @@ struct WorkDailyUpdateTransition: Codable {
     let replacement: WorkDailyReplacementEvidence?
     let approvedAt: Date
     var carryOver: Bool? = nil // true only; re-verified against the archived predecessor on every read
+    var directCarryOver: Bool? = nil // true only; no confirmation visit for an unchanged, previously allowed root
     var previousDirectories: [String: WorkDirectory]? = nil
     var directoryRebindBootSession: String? = nil
     var versionChanged: Bool { !WorkDailyState.sameTarget(fromPlan, toPlan) }
@@ -167,6 +169,7 @@ struct WorkDailyUpdateTransition: Codable {
             guard UUID(uuidString: directoryRebindBootSession) != nil,
                   WorkDirectory.canAnchor(previousDirectories, to: directories) else { return false }
         }
+        guard directCarryOver == nil || (directCarryOver == true && carryOver == true && previousDirectories == nil) else { return false }
         guard fromPlan.domain == domain, setupPlan.domain == domain,
               domain != .production || ([setupPlan, fromPlan, toPlan].allSatisfy(\.isRecordedWorkPlan) && replacement != nil),
               replacement?.valid() ?? true,
@@ -233,7 +236,11 @@ struct WorkDailyState: Codable {
             guard previous.closed, let ended = previous.endedAt ?? previous.resolvedAt,
                   current.plan.requestedAt >= ended, Self.sameTarget(previous.plan, current.plan) else { return false }
         }
-        if let grant {
+        if let grant, let update, update.directCarryOver == true {
+            guard grant.acceptedAttemptIDs.isEmpty, grant.approvedAt >= update.approvedAt, grant.approvedAt <= now,
+                  grant.toolFingerprint == update.toToolFingerprint, grant.directories == update.directories,
+                  grant.plan == update.toPlan else { return false }
+        } else if let grant {
             let accepted = Array(attempts.filter(\.accepted).suffix(requiredAcceptances))
             guard accepted.count == requiredAcceptances, grant.acceptedAttemptIDs == accepted.map(\.id),
                   grant.approvedAt >= accepted.last!.endedAt!, grant.approvedAt <= now,
@@ -521,9 +528,14 @@ struct WorkDailyCoordinator {
                 fromToolFingerprint: segment.toolFingerprint, toToolFingerprint: toolFingerprint, directories: directories,
                 previousArchiveID: UUID(), previousArchiveSHA256: dailyDataDigest(data), replacement: replacement, approvedAt: now(),
                 carryOver: prior.carriesGrant ? true : nil,
+                directCarryOver: prior.carriesGrant && !rebind ? true : nil,
                 previousDirectories: rebind ? segment.directories : nil,
                 directoryRebindBootSession: rebind ? bootSession : nil)
             var next = WorkDailyState(); next.schemaVersion = 2; next.update = update
+            if update.directCarryOver == true {
+                next.grant = WorkDailyGrant(acceptedAttemptIDs: [], approvedAt: update.approvedAt,
+                    toolFingerprint: toolFingerprint, directories: directories, plan: plan)
+            }
             guard next.valid(now: now()) else { throw Failure.stateInvalid }
             try store.archiveWorkDailyLocked(data, id: update.previousArchiveID)
             try store.writeWorkDailyLocked(JSONEncoder().encode(next))

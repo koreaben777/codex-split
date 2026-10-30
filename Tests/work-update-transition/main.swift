@@ -161,7 +161,7 @@ check(first.reviewID == nil && !first.versionChanged && first.fromToolFingerprin
 check(try archives().count == 1 && Data(contentsOf: URL(fileURLWithPath: fixture + "/work-daily-history-" + first.previousArchiveID.uuidString + ".json")) == before,
       "이전 구간을 바이트 그대로 불변 보존")
 check(first.carryOver == nil && state.requiredAcceptances == 2, "일상 허용이 없던 구간 뒤에는 허용 승계 없음: 수용 2회")
-let unforged = try rewriteDaily { $0["carryOver"] = true }
+let unforged = try rewriteDaily { $0["carryOver"] = true; $0["directCarryOver"] = true }
 rejected("허용 없던 이전 구간에 승계 표시 위조 거부") { _ = try daily.read() }
 try restoreDaily(unforged)
 rejected("이전 런처로 새 구간 실행 불가") { try visit("v1", tool: toolA) }
@@ -177,8 +177,60 @@ check(try !daily.read().carriesGrant, "승계 표시 없는 구간은 수용 2�
 try daily.transaction { try $0.approveNormal(toolFingerprint: toolB, directories: roots, accepted: true, now: tick()) }
 check(try daily.read().grant != nil, "새 구간 수용 2회 뒤 별도 일상 허용")
 
-// 2) Official update: v1 -> v2 needs a reviewed edge; the grant does not carry over.
+// Directory rebinding keeps the existing one-visit confirmation even with an earlier grant.
+let changedRootDir = fixture + "/changed-root"
+try fm.createDirectory(atPath: changedRootDir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+for name in try fm.contentsOfDirectory(atPath: fixture) where name.hasSuffix(".json") {
+    try fm.copyItem(atPath: fixture + "/" + name, toPath: changedRootDir + "/" + name)
+}
+let changedRootDaily = WorkDailyCoordinator.synthetic(store: try PrivateStore(root: changedRootDir), now: { clock })
+let changedRootPlan = target("v2", tick())
+let changedRootUpdate = try changedRootDaily.beginUpdate(plan: changedRootPlan, accepted: true, consentAt: clock,
+    toolFingerprint: toolC, directories: anchoredRoots, reviewID: review, replacement: nil,
+    directoryRebindAccepted: true, bootSession: newBoot, inspect: {})
+check(try changedRootUpdate.carryOver == true && changedRootDaily.read().grant == nil,
+      "폴더 재연결은 기존 허용이 있어도 확인 방문 유지")
+
+// 2) Official update: v1 -> v2 directly re-issues daily use after a reviewed edge and consent.
 let second = try begin("v2", tool: toolC, reviewID: review)
+state = try daily.read()
+check(state.grant != nil && state.attempts.isEmpty && state.acceptedCount == 0,
+      "검증된 업데이트 동의 직후 확인 방문 없이 일상 허용")
+check(state.grant?.acceptedAttemptIDs.isEmpty == true && state.grant?.toolFingerprint == toolC
+      && WorkDailyState.sameTarget(state.grant!.plan, target("v2", clock)), "새 허용은 새 버전·런처에 귀속, 성공 횟수 복사 없음")
+var normal = state
+let normalPlan = target("v2", tick())
+_ = try normal.reserve(plan: normalPlan, scope: .normal, consentAccepted: true, toolFingerprint: toolC,
+    directories: roots, owner: owner, bootSession: boot, now: clock)
+check(normal.pending, "확인·종료 0회 상태에서 바로 일상 실행 가능")
+rejected("실행 중에는 다음 업데이트 차단") {
+    try daily.transaction { $0 = normal }
+    _ = try begin("v3", tool: toolA, reviewID: review)
+}
+try restoreDaily(try JSONEncoder().encode(state))
+do {
+    let bytes = try JSONEncoder().encode(state)
+    var object = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+    var grant = object["grant"] as! [String: Any]
+    for key in ["toolFingerprint", "directories", "plan"] {
+        grant = object["grant"] as! [String: Any]
+        let original = grant[key]
+        if key == "toolFingerprint" { grant[key] = toolA }
+        if key == "directories" { grant[key] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(anchoredRoots)) }
+        if key == "plan" { grant[key] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(target("v1", clock))) }
+        object["grant"] = grant
+        rejected("즉시 승계 허용의 대상 변조 거부: " + key) { _ = try WorkDailyState.decode(JSONSerialization.data(withJSONObject: object), now: clock) }
+        grant[key] = original; object["grant"] = grant
+    }
+    let directFalse = try rewriteDaily { $0["directCarryOver"] = false }
+    rejected("즉시 승계 표시 false 거부") { _ = try daily.read() }
+    try restoreDaily(directFalse)
+}
+// Old carry-over records remain readable and still require their one confirmed visit.
+var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as! [String: Any]
+var legacyUpdate = legacy["update"] as! [String: Any]
+legacyUpdate["directCarryOver"] = nil; legacy["update"] = legacyUpdate; legacy["grant"] = nil
+try restoreDaily(JSONSerialization.data(withJSONObject: legacy))
 state = try daily.read()
 check(second.versionChanged && second.reviewID == review && second.setupPlan == setupPlan && state.grant == nil && state.acceptedCount == 0,
       "버전 업데이트 구간: 검토 ID 기록, 허용 자체는 넘어오지 않음")
@@ -208,7 +260,7 @@ check(try earnedDaily.read().carriesGrant && earnedDaily.read().grant == nil, "�
 let earnedPlan = target("v2", tick())
 let relaunch = try earnedDaily.beginUpdate(plan: earnedPlan, accepted: true, consentAt: earnedPlan.requestedAt, toolFingerprint: toolA,
                                            directories: roots, reviewID: nil, replacement: nil, inspect: {})
-check(try relaunch.carryOver == true && earnedDaily.read().requiredAcceptances == 1, "그 사이 교체돼도 새 구간은 확인 1회")
+check(try relaunch.carryOver == true && earnedDaily.read().grant != nil, "이전 형식에서 확인 완료한 허용도 다음 업데이트에 즉시 승계")
 let legacySegment = try rewriteDaily { $0["carryOver"] = nil }
 check(try daily.read().requiredAcceptances == 2, "승계 표시가 없던 이전 형식 구간은 그대로 읽고 수용 2회 유지")
 try restoreDaily(legacySegment)
